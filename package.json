@@ -1,0 +1,25 @@
+{
+  "name": "@cloud-cli/",
+  "version": "0.0.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "tdd": "jest --watchAll"
+  },
+  "prettier": "@cloud-cli/prettier-config",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cloud-cli/.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@cloud-cli/prettier-config": "^1.0.0",
+    "@cloud-cli/jest-config": "^1.0.0",
+    "@cloud-cli/typescript-config": "^1.0.0"
+  }
+}

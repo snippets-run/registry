@@ -1,0 +1,13 @@
+name: CICD
+on:
+  push:
+    branches:
+      - main
+jobs:
+  release:
+    uses: homebots/workflows/.github/workflows/node-build-release.yml@master
+    with:
+      branches: main
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
