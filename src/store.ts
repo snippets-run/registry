@@ -1,5 +1,5 @@
 const baseUrl = 'https://store.homebots.io';
-const fetchOptions = { mode: 'cors' };
+const fetchOptions: RequestInit = { mode: 'cors' };
 const fetchHeaders = { headers: { 'content-type': 'application/json' } };
 const idIsMissingError = new Error('Id is missing');
 
@@ -8,13 +8,15 @@ const idIsMissingError = new Error('Id is missing');
  * @description Representation of a store
  */
 export class Store {
+  id: string;
+
   /**
    * Creates a JSON store
    * @returns {Promise<string>} new store ID
    */
   static async create() {
     const x = await fetch(new URL('/new', baseUrl), fetchOptions);
-    const store = await x.json();
+    const store = (await x.json()) as { id: string };
     return store.id;
   }
 
@@ -73,6 +75,8 @@ export class Store {
  * @description Representation of a single kind of resource
  */
 class Resource {
+  name: string;
+  resourceUrl: string;
   constructor(storeId, name) {
     if (!name) {
       throw new Error('Resource name is missing');
@@ -153,6 +157,6 @@ class Resource {
       return true;
     }
 
-    throw new Error(res.status);
+    throw new Error(String(res.status));
   }
 }

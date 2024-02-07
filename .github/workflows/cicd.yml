@@ -1,13 +1,14 @@
-name: CICD
 on:
-  push:
-    branches:
-      - main
+  - push
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  release:
-    uses: homebots/workflows/.github/workflows/node-build-release.yml@master
+  build:
+    uses: cloud-cli/workflows/.github/workflows/docker-ghcr-build.yml@main
     with:
-      branches: main
-    secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      name: snippets-run/registry
+      baseImage: cloud-cli/node:latest
+      type: node
