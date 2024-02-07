@@ -12,7 +12,7 @@ async function onReadSnippet(_req, res, args) {
   try {
     snippet = await getSnippet(owner, name);
   } catch (error) {
-    res.writeHead(404, String(error));
+    res.writeHead(404, String(error)).end();
     return;
   }
 
@@ -38,7 +38,7 @@ async function onWriteSnippet(req, res, args) {
     const { owner, name, platform } = args;
     const snippet = await readStream(req);
     const json = JSON.parse(snippet.toString('utf8'));
-    const inputs = json.inputs.map((i) => ({ name: i.name, description: i.description }));
+    const inputs = json.inputs?.map((i) => ({ name: i.name, description: i.description }));
     const script = json.script;
 
     if (!script) {
