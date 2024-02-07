@@ -5,8 +5,7 @@
   "types": "./dist/index.d.ts",
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "test": "echo true"
+    "ci": "npm i && ./node_modules/.bin/tsc"
   },
   "prettier": "@cloud-cli/prettier-config",
   "private": true,
