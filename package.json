@@ -13,7 +13,8 @@
   "devDependencies": {
     "@cloud-cli/prettier-config": "^1.0.0",
     "@cloud-cli/typescript-config": "^1.0.0",
-    "@types/node": "^20.11.16"
+    "@types/node": "^20.11.16",
+    "typescript": "^5.3.3"
   },
   "dependencies": {
     "micro-router": "^1.0.1"

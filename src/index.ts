@@ -1,9 +1,9 @@
 import router from 'micro-router';
 import { createServer } from 'node:http';
-import { Store } from 'https://store.homebots.io/index.mjs';
+import { Store } from './store.js';
 
 const store = Store.get(process.env.STORE_ID);
-const snippets = store.getResource('s');
+const snippetStore = store.getResource('s');
 
 async function onReadSnippet(_req, res, args) {
   const { owner = 'snippets', name, platform } = args;
@@ -47,7 +47,7 @@ async function onWriteSnippet(req, res, args) {
     }
 
     const text = JSON.stringify({ inputs, script, platform });
-    await snippets.set(`${owner}/${name}`, text);
+    await snippetStore.set(`${owner}/${name}`, text);
     res.end('OK');
   } catch (error) {
     console.log(error);
@@ -75,7 +75,7 @@ async function getNodeSnippet(res, snippet) {
 
 async function getShellSnippet(res, snippet) {
   try {
-    const inputs = snippets.inputs.map((i) => `echo ${i.description || i.name}?\nread ${i.name}`).join('\n');
+    const inputs = snippet.inputs.map((i) => `echo ${i.description || i.name}?\nread ${i.name}`).join('\n');
     const script = `#!/bin/bash
     ${inputs}
     ${snippet.script}
@@ -88,7 +88,7 @@ async function getShellSnippet(res, snippet) {
 
 async function getSnippet(owner, name) {
   try {
-    return await snippets.get(`${owner}/${name}`);
+    return await snippetStore.get(`${owner}/${name}`);
   } catch {
     throw new Error('Snippet not found');
   }
