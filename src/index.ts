@@ -12,6 +12,7 @@ async function onReadSnippet(_req, res, args) {
   try {
     snippet = await getSnippet(owner, name);
   } catch (error) {
+    console.log(error);
     res.writeHead(404, String(error)).end();
     return;
   }
@@ -88,6 +89,7 @@ async function getNodeSnippet(res, snippet) {
     const json = JSON.stringify({ inputs, script });
     res.end(json);
   } catch (error) {
+    console.log(error);
     res.writeHead(400, String(error)).end();
   }
 }
@@ -103,6 +105,7 @@ async function getShellSnippet(res, snippet) {
     `;
     res.end(script);
   } catch (error) {
+    console.log(error);
     res.writeHead(400, String(error)).end();
   }
 }
@@ -110,7 +113,8 @@ async function getShellSnippet(res, snippet) {
 async function getSnippet(owner, name) {
   try {
     return await snippetStore.get(`${owner}:${name}`);
-  } catch {
+  } catch (error) {
+    console.log(error);
     throw new Error("Snippet not found");
   }
 }
