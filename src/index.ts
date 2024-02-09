@@ -39,7 +39,7 @@ async function onReadSnippet(_req, res, args) {
 
 async function onWriteSnippet(req, res, args) {
   try {
-    const { platform } = args;
+    const { owner, name, platform } = args;
     const snippet = await readStream(req);
     const json = JSON.parse(snippet.toString("utf8"));
     const inputs = json.inputs?.map((i) => ({
@@ -59,6 +59,8 @@ async function onWriteSnippet(req, res, args) {
       inputs,
       script,
       platform,
+      owner,
+      name,
     };
     await snippetStore.set(id, text);
     res.end("OK");
@@ -77,7 +79,7 @@ const handler = router({
   "GET /search": onSearch,
   "GET /s/:platform/:owner/:name": onReadSnippet,
   "GET /s/:platform/:name": onReadSnippet,
-  "POST /s/:platform/:owner/:name": onWriteSnippet,
+  "PUT /s/:platform/:owner/:name": onWriteSnippet,
 });
 
 createServer((req, res) => {
