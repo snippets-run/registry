@@ -55,7 +55,7 @@ async function onWriteSnippet(req, res, args) {
   }
 }
 
-function onSearch(_req, res) {
+async function onSearch(_req, res) {
   const list = await snippetStore.list();
   res.end(JSON.stringify(list));
 }
