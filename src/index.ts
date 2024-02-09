@@ -47,6 +47,7 @@ async function onWriteSnippet(req, res, args) {
       description: i.description,
     }));
     const script = json.script;
+    const { description = "" } = json;
 
     if (!script) {
       res.writeHead(400, "Script cannot be empty").end();
@@ -61,6 +62,7 @@ async function onWriteSnippet(req, res, args) {
       platform,
       owner,
       name,
+      description,
     };
     await snippetStore.set(id, text);
     res.end("OK");
