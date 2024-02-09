@@ -1,16 +1,19 @@
 import router from "micro-router";
 import { createServer } from "node:http";
 import { Store } from "./store.js";
+import { createHash } from "node:crypto";
 
 const store = Store.get(process.env.STORE_ID);
 const snippetStore = store.getResource("s");
+const getSnippetId = ({ platform, owner, name }) =>
+  createHash("sha256").update(`${platform}:${owner}/${name}`).digest("hex");
 
 async function onReadSnippet(_req, res, args) {
   const { owner = "snippets", name, platform } = args;
   let snippet;
 
   try {
-    snippet = await getSnippet(owner, name);
+    snippet = await getSnippet(platform, owner, name);
   } catch (error) {
     console.log(error);
     res.writeHead(404, String(error)).end();
@@ -50,8 +53,14 @@ async function onWriteSnippet(req, res, args) {
       return;
     }
 
-    const text = JSON.stringify({ inputs, script, platform });
-    await snippetStore.set(`${owner}:${name}`, text);
+    const id = getSnippetId(args);
+    const text = JSON.stringify({
+      id,
+      inputs,
+      script,
+      platform,
+    });
+    await snippetStore.set(id, text);
     res.end("OK");
   } catch (error) {
     console.log(error);
@@ -75,7 +84,7 @@ createServer((req, res) => {
   const end = res.end;
   res.end = (...args) => {
     console.log(
-      `${req.method} ${req.url} [${res.statusCode}] res.statusMessage`
+      `${req.method} ${req.url} [${res.statusCode}] ${res.statusMessage}`
     );
     return end.call(res, ...args);
   };
@@ -110,9 +119,11 @@ async function getShellSnippet(res, snippet) {
   }
 }
 
-async function getSnippet(owner, name) {
+async function getSnippet(platform, owner, name) {
+  const id = getSnippetId({ platform, owner, name });
+
   try {
-    return await snippetStore.get(`${owner}:${name}`);
+    return await snippetStore.get(id);
   } catch (error) {
     console.log(error);
     throw new Error("Snippet not found");
