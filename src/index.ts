@@ -47,7 +47,7 @@ async function onWriteSnippet(req, res, args) {
     }
 
     const text = JSON.stringify({ inputs, script, platform });
-    await snippetStore.set(`${owner}/${name}`, text);
+    await snippetStore.set(`${owner}:${name}`, text);
     res.end('OK');
   } catch (error) {
     console.log(error);
@@ -94,7 +94,7 @@ async function getShellSnippet(res, snippet) {
 
 async function getSnippet(owner, name) {
   try {
-    return await snippetStore.get(`${owner}/${name}`);
+    return await snippetStore.get(`${owner}:${name}`);
   } catch {
     throw new Error('Snippet not found');
   }
