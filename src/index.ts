@@ -54,12 +54,12 @@ async function onWriteSnippet(req, res, args) {
     }
 
     const id = getSnippetId(args);
-    const text = JSON.stringify({
+    const text = {
       id,
       inputs,
       script,
       platform,
-    });
+    };
     await snippetStore.set(id, text);
     res.end("OK");
   } catch (error) {
