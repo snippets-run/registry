@@ -149,7 +149,7 @@ class Resource {
     const res = await fetch(url, {
       ...fetchOptions,
       ...fetchHeaders,
-      method: 'POST',
+      method: 'PUT',
       body: JSON.stringify(payload),
     });
 
