@@ -55,7 +55,13 @@ async function onWriteSnippet(req, res, args) {
   }
 }
 
+function onSearch(_req, res) {
+  const list = await snippetStore.list();
+  res.end(JSON.stringify(list));
+}
+
 const handler = router({
+  'GET /search': onSearch,
   'GET /s/:platform/:name': onReadSnippet,
   'GET /s/:platform/:owner/:name': onReadSnippet,
   'POST /s/:platform/:owner/:name': onWriteSnippet,
