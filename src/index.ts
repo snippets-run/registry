@@ -39,7 +39,7 @@ async function onReadSnippet(_req, res, args) {
 
 async function onWriteSnippet(req, res, args) {
   try {
-    const { owner, name, platform } = args;
+    const { platform } = args;
     const snippet = await readStream(req);
     const json = JSON.parse(snippet.toString("utf8"));
     const inputs = json.inputs?.map((i) => ({
