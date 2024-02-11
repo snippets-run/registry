@@ -89,7 +89,7 @@ class Resource {
   /**
    * List all content for this resource
    */
-  async list() {
+  async list(): Promise<any[]> {
     const res = await fetch(this.resourceUrl, fetchOptions);
 
     if (res.ok) {

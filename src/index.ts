@@ -78,7 +78,7 @@ async function onGet(_req, res, args) {
 }
 
 async function onIndex(_req, res) {
-  const list: any[] = await snippetStore.list();
+  const list = await snippetStore.list();
 
   res.end(
     JSON.stringify(
