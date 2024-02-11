@@ -1,6 +1,7 @@
+// @ts-ignore
+import { Store } from 'https://store.homebots.io/index.mjs'
 import router from "micro-router";
 import { createServer } from "node:http";
-import { Store } from "./store.js";
 import { createHash } from "node:crypto";
 
 const store = Store.get(process.env.STORE_ID);
