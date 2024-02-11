@@ -72,13 +72,30 @@ async function onWriteSnippet(req, res, args) {
   }
 }
 
+async function onGet(_req, res, args) {
+  const snippet = await snippetStore.get(getSnippetId(args));
+  res.end(JSON.stringify(snippet));
+}
+
+async function onIndex(_req, res) {
+  const list = await snippetStore.list();
+
+  res.end(
+    JSON.stringify(
+      list.map((s) => ({ platform: s.platform, owner: s.owner, name: s.name }))
+    )
+  );
+}
+
 async function onSearch(_req, res) {
   const list = await snippetStore.list();
   res.end(JSON.stringify(list));
 }
 
 const handler = router({
+  "GET /index": onIndex,
   "GET /search": onSearch,
+  "GET /snippets/:platform/:owner/:name": onGet,
   "GET /s/:platform/:owner/:name": onReadSnippet,
   "GET /s/:platform/:name": onReadSnippet,
   "PUT /s/:platform/:owner/:name": onWriteSnippet,
