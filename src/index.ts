@@ -9,6 +9,21 @@ const snippetStore = store.getResource("s");
 const getSnippetId = ({ platform, owner, name }) =>
   createHash("sha256").update(`${platform}:${owner}/${name}`).digest("hex");
 
+const handler = router({
+  "GET /index": onIndex,
+  "GET /search": onSearch,
+  "GET /uid/:platform/:owner/:name": onGetUid,
+  "GET /snippets/:platform/:owner/:name": onGet,
+  "GET /s/:platform/:owner/:name": onReadSnippet,
+  "GET /s/:platform/:name": onReadSnippet,
+  "PUT /s/:platform/:owner/:name": onWriteSnippet,
+});
+
+function onGetUid(_req, res, args) {
+  const { owner = "snippets", name, platform } = args;
+  res.send(getSnippetId(platform, owner, name));
+}
+
 async function onReadSnippet(_req, res, args) {
   const { owner = "snippets", name, platform } = args;
   let snippet;
@@ -18,11 +33,6 @@ async function onReadSnippet(_req, res, args) {
   } catch (error) {
     console.log(error);
     res.writeHead(404, String(error)).end();
-    return;
-  }
-
-  if (snippet.platform !== platform) {
-    res.writeHead(415, "Snippet is for another platform").end();
     return;
   }
 
@@ -41,8 +51,8 @@ async function onReadSnippet(_req, res, args) {
 async function onWriteSnippet(req, res, args) {
   try {
     const { owner, name, platform } = args;
-    const snippet = await readStream(req);
-    const json = JSON.parse(snippet.toString("utf8"));
+    const buffer = await readStream(req);
+    const json = JSON.parse(buffer.toString("utf8"));
     const inputs = json.inputs?.map((i) => ({
       name: i.name,
       description: i.description,
@@ -56,7 +66,7 @@ async function onWriteSnippet(req, res, args) {
     }
 
     const id = getSnippetId(args);
-    const text = {
+    const snippet = {
       id,
       inputs,
       script,
@@ -65,7 +75,7 @@ async function onWriteSnippet(req, res, args) {
       name,
       description,
     };
-    await snippetStore.set(id, text);
+    await snippetStore.set(id, snippet);
     res.end("OK");
   } catch (error) {
     console.log(error);
@@ -74,8 +84,12 @@ async function onWriteSnippet(req, res, args) {
 }
 
 async function onGet(_req, res, args) {
-  const snippet = await snippetStore.get(getSnippetId(args));
-  res.end(JSON.stringify(snippet));
+  try {
+    const snippet = await snippetStore.get(getSnippetId(args));
+    res.end(JSON.stringify(snippet));
+  } catch (error) {
+    res.writeHead(400, String(error)).end();
+  }
 }
 
 async function onIndex(_req, res) {
@@ -93,31 +107,10 @@ async function onSearch(_req, res) {
   res.end(JSON.stringify(list));
 }
 
-const handler = router({
-  "GET /index": onIndex,
-  "GET /search": onSearch,
-  "GET /snippets/:platform/:owner/:name": onGet,
-  "GET /s/:platform/:owner/:name": onReadSnippet,
-  "GET /s/:platform/:name": onReadSnippet,
-  "PUT /s/:platform/:owner/:name": onWriteSnippet,
-});
-
-createServer((req, res) => {
-  const end = res.end;
-  res.end = (...args) => {
-    console.log(
-      `${req.method} ${req.url} [${res.statusCode}] ${res.statusMessage}`
-    );
-    return end.call(res, ...args);
-  };
-
-  handler(req, res);
-}).listen(Number(process.env.PORT));
-
 async function getNodeSnippet(res, snippet) {
   try {
-    const { inputs = [], script = "" } = snippet;
-    const json = JSON.stringify({ inputs, script });
+    const { inputs = [], script = "", description = "" } = snippet;
+    const json = JSON.stringify({ inputs, script, description });
     res.end(json);
   } catch (error) {
     console.log(error);
@@ -147,7 +140,7 @@ async function getSnippet(platform, owner, name) {
   try {
     return await snippetStore.get(id);
   } catch (error) {
-    console.log(error);
+    console.log('getSnippet', error);
     throw new Error("Snippet not found");
   }
 }
@@ -161,3 +154,15 @@ function readStream(stream): Promise<Buffer> {
     stream.on("end", () => resolve(Buffer.concat(all)));
   });
 }
+
+createServer((req, res) => {
+  const end = res.end;
+  res.end = (...args) => {
+    console.log(
+      `${req.method} ${req.url} [${res.statusCode}] ${res.statusMessage}`
+    );
+    return end.call(res, ...args);
+  };
+
+  handler(req, res);
+}).listen(Number(process.env.PORT));
