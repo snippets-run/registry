@@ -21,7 +21,7 @@ const handler = router({
 
 function onGetUid(_req, res, args) {
   const { owner = "snippets", name, platform } = args;
-  res.send(getSnippetId({ platform, owner, name }));
+  res.end(getSnippetId({ platform, owner, name }));
 }
 
 async function onReadSnippet(_req, res, args) {
