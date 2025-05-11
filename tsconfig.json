@@ -1,9 +1,12 @@
 {
-  "extends": "@cloud-cli/typescript-config",
   "compilerOptions": {
+    "rootDir": "./src/",
     "outDir": "./dist",
-    "esModuleInterop": true,
-    "allowJs": true
+    "module": "nodenext",
+    "target": "esnext",
+    "noImplicitAny": false,
+    "types": ["node"],
+    "declaration": false
   },
-  "include": ["src/**/*.ts"]
+  "include": ["**/*.mts"]
 }

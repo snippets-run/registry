@@ -1,21 +1,20 @@
 {
   "name": "@snippets.run/registry",
+  "private": true,
   "version": "0.0.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
   "scripts": {
-    "ci": "npm i && ./node_modules/.bin/tsc"
+    "build": "tsc",
+    "start": "node dist/index.mjs",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
-  "prettier": "@cloud-cli/prettier-config",
-  "private": true,
   "devDependencies": {
-    "@cloud-cli/prettier-config": "^1.0.0",
-    "@cloud-cli/typescript-config": "^1.0.0",
-    "@types/node": "^20.11.16",
-    "typescript": "^5.3.3"
+    "@types/node": "^26.4.1",
+    "typescript": "^6.0.3"
   },
-  "dependencies": {
-    "micro-router": "^1.0.1"
+  "engines": {
+    "node": ">=22"
   }
 }
