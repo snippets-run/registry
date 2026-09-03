@@ -28,7 +28,7 @@ Repositories are stored at `$SNIPPET_REPOSITORIES_PATH/<owner>/<repo>`, for exam
 
 ## API
 
-Resolve a branch, tag, or commit:
+- Resolve a branch, tag, or commit:
 
 ```http
 GET /api/resolve/snippets/hello.sh@v1
@@ -44,18 +44,24 @@ GET /api/resolve/snippets/hello.sh@v1
 }
 ```
 
-Download an immutable commit archive:
+- Download an immutable commit archive.
+The response is a `tar.gz` stream produced by `git archive`.
+Errors use JSON in the form `{"error":"message"}`.
 
 ```http
 GET /api/download/snippets/hello.sh@a672cb7f3d62e7c19fde5f4e0391a63d65d34a00
 ```
 
-The response is a `tar.gz` stream produced by `git archive`. Errors use JSON in the form `{"error":"message"}`. `GET /health` returns the service health status.
-
-Browse an owner's snippets:
+- Returns the service health status.
 
 ```http
-GET /api/snippets/snippets
+GET /health
+```
+
+- Browse an owner's snippets:
+
+```http
+GET /api/snippets/owner
 ```
 
 ```json
@@ -68,13 +74,14 @@ GET /api/snippets/snippets
 ]
 ```
 
-Show the current entrypoint source for a snippet:
+- Show the current entrypoint source for a snippet:
 
 ```http
 GET /api/snippets/snippets/hello.sh
 ```
 
-The detail response includes `owner`, `repo`, `type`, `entrypoint`, the resolved `commit`, and `script`. It reads `HEAD`; use the resolve and download endpoints when an immutable archive is required.
+The detail response includes `owner`, `repo`, `type`, `entrypoint`, the resolved `commit`, and `script`.
+It reads `HEAD`; use the resolve and download endpoints when an immutable archive is required.
 
 ### Editor API
 
@@ -89,7 +96,8 @@ Content-Type: application/json
 {"message":"Explain the update"}
 ```
 
-The workspace response includes tracked file contents, staged state, and recent commit metadata. The commit message is optional and defaults to `Update snippet`. Configure `SNIPPET_STAGING_PATH` to store private indexes outside the repository root.
+The workspace response includes tracked file contents, staged state, and recent commit metadata. The commit message is optional and defaults to `Update snippet`.
+Configure `SNIPPET_STAGING_PATH` to store private indexes outside the repository root.
 
 ## Development
 
