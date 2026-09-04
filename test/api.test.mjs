@@ -148,3 +148,41 @@ test("rejects unsafe editor file paths", async (t) => {
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "invalid file path" });
 });
+
+test("creates and deletes snippets through the API", async (t) => {
+  const snippet = await createSnippetRepository();
+  const registry = await startRegistry(snippet.root);
+  t.after(async () => {
+    await registry.close();
+    await snippet.remove();
+  });
+
+  const created = await fetch(`${registry.url}/api/snippets/acme/goodbye.py`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: "print('goodbye')\n", message: "Create goodbye" }),
+  });
+  assert.equal(created.status, 201);
+  assert.match((await created.json()).commit, /^[0-9a-f]{40}$/);
+
+  const detail = await fetch(`${registry.url}/api/snippets/acme/goodbye.py`);
+  assert.deepEqual(await detail.json(), {
+    owner: "acme",
+    repo: "goodbye.py",
+    type: "python",
+    entrypoint: "main.py",
+    commit: (await fetch(`${registry.url}/api/resolve/acme/goodbye.py@main`).then((response) => response.json())).commit,
+    script: "print('goodbye')\n",
+  });
+
+  const duplicate = await fetch(`${registry.url}/api/snippets/acme/goodbye.py`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ content: "print('again')\n" }),
+  });
+  assert.equal(duplicate.status, 409);
+
+  const deleted = await fetch(`${registry.url}/api/snippets/acme/goodbye.py`, { method: "DELETE" });
+  assert.deepEqual(await deleted.json(), { owner: "acme", repo: "goodbye.py", deleted: true });
+  assert.equal((await fetch(`${registry.url}/api/snippets/acme/goodbye.py`)).status, 404);
+});

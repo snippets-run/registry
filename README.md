@@ -81,6 +81,17 @@ GET /api/snippets/snippets/hello.sh
 ```
 
 The detail response includes `owner`, `repo`, `type`, `entrypoint`, the resolved `commit`, and `script`.
+
+Create a typed snippet without filesystem or Git access:
+
+```http
+POST /api/snippets/snippets/hello.sh
+Content-Type: application/json
+
+{"content":"printf 'Hello, world!\\n'\n","message":"Create hello"}
+```
+
+The type suffix determines the generated entrypoint: `main.sh`, `index.mjs`, or `main.py`. `DELETE /api/snippets/<owner>/<repo>` removes a snippet and any private staged index. Both mutation endpoints validate identifiers and only perform server-owned repository operations.
 It reads `HEAD`; use the resolve and download endpoints when an immutable archive is required.
 
 ### Editor API

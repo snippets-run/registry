@@ -24,6 +24,22 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       const script = await fileAtCommit(repository, commit, entrypoint);
       sendJSON(response, 200, { owner, repo, type, entrypoint, commit, script });
     },
+    "POST /api/snippets/{owner}/{repo}": async (request, response, params) => {
+      const { owner, repo, type } = snippetTarget(params);
+      const { content, message } = await createRequest(request);
+      const root = await realpath(repositoryRoot);
+      const repository = join(root, owner, repo);
+      await createSnippet(repository, type, content, message);
+      sendJSON(response, 201, { owner, repo, commit: await resolveCommit(repository, "HEAD") });
+    },
+    "DELETE /api/snippets/{owner}/{repo}": async (_request, response, params) => {
+      const { owner, repo } = snippetTarget(params);
+      const root = await realpath(repositoryRoot);
+      const repository = await repositoryPath(root, owner, repo);
+      await rm(repository, { recursive: true });
+      await rm(join(stagingRoot, owner, `${repo}.index`), { force: true });
+      sendJSON(response, 200, { owner, repo, deleted: true });
+    },
     "GET /api/snippets/{owner}": async (_request, response, params) => {
       const owner = validPart(params.owner);
       const root = await realpath(repositoryRoot);
@@ -72,6 +88,13 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
   const handler = router(routes, routeNotFound);
   return createServer(async (request, response) => {
     try {
+      response.setHeader("access-control-allow-origin", "https://snippets.run");
+      response.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
+      response.setHeader("access-control-allow-headers", "Content-Type, Accept");
+      if (request.method === "OPTIONS") {
+        response.writeHead(204);
+        return response.end();
+      }
       await handler(request, response);
     } catch (error: any) {
       handleError(response, error);
@@ -153,6 +176,35 @@ async function listOwnerSnippets(root, owner) {
   return snippets.sort((left, right) => left.repo.localeCompare(right.repo));
 }
 
+async function createSnippet(repository, type, content, message) {
+  try {
+    await stat(repository);
+    throw conflict("snippet already exists");
+  } catch (error: any) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  await mkdir(join(repository, ".."), { recursive: true });
+  const initialized = await git(join(repository, ".."), ["init", "--bare", "--initial-branch", "main", repository]);
+  if (initialized.code !== 0) throw new Error("could not create snippet repository");
+  const entrypoint = type === "bash" ? "main.sh" : type === "python" ? "main.py" : "index.mjs";
+  const blob = await git(repository, ["hash-object", "-w", "--stdin"], {}, content);
+  if (blob.code !== 0) throw new Error("could not create snippet content");
+  const index = `${repository}.create-index`;
+  try {
+    const environment = { GIT_INDEX_FILE: index };
+    const added = await git(repository, ["update-index", "--add", "--cacheinfo", `100755,${blob.stdout.trim()},${entrypoint}`], environment);
+    if (added.code !== 0) throw new Error("could not prepare snippet content");
+    const tree = await git(repository, ["write-tree"], environment);
+    if (tree.code !== 0) throw new Error("could not prepare snippet commit");
+    const commit = await git(repository, ["commit-tree", tree.stdout.trim(), "-m", message || `Create ${entrypoint}`], {}, undefined, true);
+    if (commit.code !== 0) throw new Error("could not create snippet commit");
+    const updated = await git(repository, ["update-ref", "refs/heads/main", commit.stdout.trim()]);
+    if (updated.code !== 0) throw new Error("could not publish snippet");
+  } finally {
+    await rm(index, { force: true });
+  }
+}
+
 async function editorSnippet(repository, target, index) {
   const head = await resolveCommit(repository, "HEAD");
   const files = await trackedFiles(repository, head);
@@ -229,6 +281,24 @@ async function requestMessage(request) {
   const message = typeof (value as any).message === "string" ? (value as any).message.trim() : "";
   if (message.length > 500 || message.includes("\0")) throw invalidTarget("invalid commit message");
   return message;
+}
+
+async function createRequest(request) {
+  const body = await requestBody(request);
+  const url = new URL(request.url!, "http://registry.local");
+  if (request.headers["content-type"]?.startsWith("application/json") === false) {
+    const message = url.searchParams.get("message")?.trim() || "";
+    if (body.length > 1024 * 1024) throw invalidTarget("file content exceeds 1 MB");
+    if (message.length > 500 || message.includes("\0")) throw invalidTarget("invalid commit message");
+    return { content: body, message };
+  }
+  let value: any;
+  try { value = JSON.parse(body); } catch { throw invalidTarget("expected JSON request body"); }
+  if (typeof value.content !== "string") throw invalidTarget("snippet content is required");
+  if (value.content.length > 1024 * 1024) throw invalidTarget("file content exceeds 1 MB");
+  const message = typeof value.message === "string" ? value.message.trim() : "";
+  if (message.length > 500 || message.includes("\0")) throw invalidTarget("invalid commit message");
+  return { content: value.content, message };
 }
 
 function requestBody(request) {
@@ -324,9 +394,10 @@ function streamArchive(response, repository, commit) {
   child.stdout.pipe(response);
 }
 
-function git(repository, arguments_, environment = {}, input?: string) {
+function git(repository, arguments_, environment = {}, input?: string, author = false) {
   return new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
-    const child = spawn("git", ["-C", repository, ...arguments_], { stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], env: { ...process.env, ...environment } });
+    const env = author ? { ...process.env, ...environment, GIT_AUTHOR_NAME: "Snippets.run", GIT_AUTHOR_EMAIL: "registry@snippets.run", GIT_COMMITTER_NAME: "Snippets.run", GIT_COMMITTER_EMAIL: "registry@snippets.run" } : { ...process.env, ...environment };
+    const child = spawn("git", ["-C", repository, ...arguments_], { stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], env });
     let stdout = "";
     child.stdout!.on("data", (chunk) => {
       stdout += chunk;
@@ -340,6 +411,12 @@ function git(repository, arguments_, environment = {}, input?: string) {
 function invalidTarget(message) {
   const error: Error & { code?: string } = new Error(message);
   error.code = "INVALID_TARGET";
+  return error;
+}
+
+function conflict(message) {
+  const error: Error & { code?: string } = new Error(message);
+  error.code = "CONFLICT";
   return error;
 }
 
@@ -362,6 +439,9 @@ function handleError(response, error: any) {
 
   if (error.code === "INVALID_TARGET") {
     return sendError(response, 400, error.message);
+  }
+  if (error.code === "CONFLICT") {
+    return sendError(response, 409, error.message);
   }
 
   console.error(error);
