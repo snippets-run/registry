@@ -5,6 +5,7 @@
     "module": "nodenext",
     "target": "esnext",
     "noImplicitAny": false,
+    "skipLibCheck": true,
     "types": ["node"],
     "declaration": false
   },

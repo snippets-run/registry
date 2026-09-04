@@ -12,6 +12,7 @@ RUN apk add --no-cache git
 
 WORKDIR /app
 COPY --from=builder /app/dist/index.mjs ./
+COPY --from=builder /app/node_modules/micro-router ./node_modules/micro-router
 
 ENV PORT=3000
 ENV SNIPPET_REPOSITORIES_PATH=/repositories

@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { mkdir, readdir, realpath, rm, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
+import router from "micro-router";
 
 const partPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const commitPattern = /^[0-9a-f]{7,64}$/;
@@ -12,153 +13,93 @@ const snippetTypes = new Map([
 ]);
 
 export function createRegistryServer({ repositoryRoot, stagingRoot = join(repositoryRoot, ".editor-staging") }) {
+  const routes = {
+    "GET /health": async (_request, response) => sendJSON(response, 200, { status: "ok" }),
+    "GET /api/snippets/{owner}/{repo}": async (_request, response, params) => {
+      const { owner, repo, type } = snippetTarget(params);
+      const root = await realpath(repositoryRoot);
+      const repository = await repositoryPath(root, owner, repo);
+      const commit = await resolveCommit(repository, "HEAD");
+      const entrypoint = await entrypointFor(type, repository, commit);
+      const script = await fileAtCommit(repository, commit, entrypoint);
+      sendJSON(response, 200, { owner, repo, type, entrypoint, commit, script });
+    },
+    "GET /api/snippets/{owner}": async (_request, response, params) => {
+      const owner = validPart(params.owner);
+      const root = await realpath(repositoryRoot);
+      sendJSON(response, 200, await listOwnerSnippets(root, owner));
+    },
+    "GET /api/resolve/{owner}/{target}": async (_request, response, params) => {
+      const { owner, repo, value, type } = referenceTarget(params);
+      const root = await realpath(repositoryRoot);
+      const repository = await repositoryPath(root, owner, repo);
+      const commit = await resolveCommit(repository, value);
+      sendJSON(response, 200, { owner, repo, type, ref: value, commit });
+    },
+    "GET /api/download/{owner}/{target}": async (_request, response, params) => {
+      const { owner, repo, value } = referenceTarget(params);
+      if (!commitPattern.test(value)) throw invalidTarget("invalid commit");
+      const root = await realpath(repositoryRoot);
+      const repository = await repositoryPath(root, owner, repo);
+      streamArchive(response, repository, await resolveCommit(repository, value));
+    },
+    "PUT /api/editor/{owner}/{repo}/file": async (request, response, params) => {
+      const { owner, repo } = snippetTarget(params);
+      const path = new URL(request.url!, "http://registry.local").searchParams.get("path");
+      if (!path || !validFilePath(path)) throw invalidTarget("invalid file path");
+      const root = await realpath(repositoryRoot);
+      const repository = await repositoryPath(root, owner, repo);
+      const index = await stagingIndex(stagingRoot, owner, repo);
+      await stageFile(repository, index, path, await requestContent(request));
+      sendJSON(response, 200, { path, staged: true });
+    },
+    "POST /api/editor/{owner}/{repo}/commit": async (request, response, params) => {
+      const { owner, repo } = snippetTarget(params);
+      const root = await realpath(repositoryRoot);
+      const repository = await repositoryPath(root, owner, repo);
+      const index = await stagingIndex(stagingRoot, owner, repo);
+      sendJSON(response, 201, { commit: await commitStaged(repository, index, await requestMessage(request)) });
+    },
+    "GET /api/editor/{owner}/{repo}": async (_request, response, params) => {
+      const { owner, repo } = snippetTarget(params);
+      const root = await realpath(repositoryRoot);
+      const repository = await repositoryPath(root, owner, repo);
+      const index = await stagingIndex(stagingRoot, owner, repo);
+      sendJSON(response, 200, await editorSnippet(repository, { owner, repo }, index));
+    },
+  };
+
+  const handler = router(routes, routeNotFound);
   return createServer(async (request, response) => {
     try {
-      const url = new URL(request.url!, "http://registry.local");
-
-      if (url.pathname === "/health") {
-        if (request.method !== "GET") return sendError(response, 405, "method not allowed");
-        return sendJSON(response, 200, { status: "ok" });
-      }
-
-      const editorTarget = parseEditorTarget(url);
-      if (editorTarget) {
-        const root = await realpath(repositoryRoot);
-        const repository = await repositoryPath(root, editorTarget.owner, editorTarget.repo);
-        const index = await stagingIndex(stagingRoot, editorTarget.owner, editorTarget.repo);
-
-        if (editorTarget.kind === "snippet" && request.method === "GET") {
-          return sendJSON(response, 200, await editorSnippet(repository, editorTarget, index));
-        }
-        if (editorTarget.kind === "file" && request.method === "PUT") {
-          const content = await requestContent(request);
-          await stageFile(repository, index, editorTarget.path, content);
-          return sendJSON(response, 200, { path: editorTarget.path, staged: true });
-        }
-        if (editorTarget.kind === "commit" && request.method === "POST") {
-          const message = await requestMessage(request);
-          const commit = await commitStaged(repository, index, message);
-          return sendJSON(response, 201, { commit });
-        }
-        return sendError(response, 405, "method not allowed");
-      }
-
-      if (request.method !== "GET") {
-        return sendError(response, 405, "method not allowed");
-      }
-
-      const browseTarget = parseBrowseTarget(url.pathname);
-      if (browseTarget) {
-        const root = await realpath(repositoryRoot);
-        if (browseTarget.repo) {
-          const type = snippetType(browseTarget.repo);
-          const repository = await repositoryPath(root, browseTarget.owner, browseTarget.repo);
-          const commit = await resolveCommit(repository, "HEAD");
-          const entrypoint = await entrypointFor(type, repository, commit);
-          const script = await fileAtCommit(repository, commit, entrypoint);
-
-          return sendJSON(response, 200, {
-            owner: browseTarget.owner,
-            repo: browseTarget.repo,
-            type,
-            entrypoint,
-            commit,
-            script,
-          });
-        }
-
-        return sendJSON(response, 200, await listOwnerSnippets(root, browseTarget.owner));
-      }
-
-      const target = parseTarget(url.pathname);
-
-      if (!target) {
-        return sendError(response, 404, "not found");
-      }
-
-      const root = await realpath(repositoryRoot);
-      const type = snippetType(target.repo);
-      const repository = await repositoryPath(root, target.owner, target.repo);
-
-      if (target.kind === "resolve") {
-        const commit = await resolveCommit(repository, target.value);
-
-        return sendJSON(response, 200, {
-          owner: target.owner,
-          repo: target.repo,
-          type,
-          ref: target.value,
-          commit,
-        });
-      }
-
-      if (!commitPattern.test(target.value)) {
-        return sendError(response, 400, "invalid commit");
-      }
-
-      const commit = await resolveCommit(repository, target.value);
-      streamArchive(response, repository, commit);
+      await handler(request, response);
     } catch (error: any) {
-      if (error.code === "ENOENT" || error.code === "NOT_FOUND") {
-        return sendError(response, 404, "snippet or reference not found");
-      }
-
-      if (error.code === "INVALID_TARGET") {
-        return sendError(response, 400, error.message);
-      }
-
-      console.error(error);
-      if (!response.headersSent) {
-        return sendError(response, 500, "internal server error");
-      }
-
-      response.destroy(error);
+      handleError(response, error);
     }
   });
 }
 
-function parseEditorTarget(url) {
-  const prefix = "/api/editor/";
-  if (!url.pathname.startsWith(prefix)) return null;
-  const parts = url.pathname.slice(prefix.length).split("/");
-  if (parts.length < 2 || parts.length > 3 || !parts[0] || !parts[1]) {
-    throw invalidTarget("expected owner/repository editor target");
-  }
-  const [owner, repo, action] = parts.map(decodePart);
-  if (!partPattern.test(owner) || !partPattern.test(repo)) {
-    throw invalidTarget("Invalid snippet identifier");
-  }
-  snippetType(repo);
-  if (!action) return { kind: "snippet", owner, repo };
-  if (action === "file") {
-    const path = url.searchParams.get("path");
-    if (!path || !validFilePath(path)) throw invalidTarget("invalid file path");
-    return { kind: "file", owner, repo, path };
-  }
-  if (action === "commit") return { kind: "commit", owner, repo };
-  throw invalidTarget("unknown editor action");
+function snippetTarget(params) {
+  const owner = validPart(params.owner);
+  const repo = validPart(params.repo);
+  return { owner, repo, type: snippetType(repo) };
+}
+
+function referenceTarget(params) {
+  const owner = validPart(params.owner);
+  const [repo, value] = decodePart(params.target).split("@", 2);
+  if (!partPattern.test(repo) || !value) throw invalidTarget("Invalid snippet identifier");
+  return { owner, repo, value, type: snippetType(repo) };
+}
+
+function validPart(value) {
+  const decoded = decodePart(value);
+  if (!partPattern.test(decoded)) throw invalidTarget("Invalid snippet identifier");
+  return decoded;
 }
 
 function validFilePath(path) {
   return path.length <= 240 && !path.startsWith("/") && !path.includes("\\") && path.split("/").every((part) => part && part !== "." && part !== "..");
-}
-
-function parseBrowseTarget(pathname) {
-  const prefix = "/api/snippets/";
-  if (!pathname.startsWith(prefix)) {
-    return null;
-  }
-
-  const parts = pathname.slice(prefix.length).split("/");
-  if (parts.length < 1 || parts.length > 2 || parts.some((part) => !part)) {
-    throw invalidTarget("expected owner or owner/repository");
-  }
-
-  const [owner, repo] = parts.map(decodePart);
-  if (!partPattern.test(owner) || (repo && !partPattern.test(repo))) {
-    throw invalidTarget("Invalid snippet identifier");
-  }
-  return { owner, repo };
 }
 
 function snippetType(repo) {
@@ -168,25 +109,6 @@ function snippetType(repo) {
     }
   }
   throw invalidTarget("repository name must end in .sh, .js, or .py");
-}
-
-function parseTarget(pathname) {
-  for (const [prefix, kind] of [["/api/resolve/", "resolve"], ["/api/download/", "download"]]) {
-    if (!pathname.startsWith(prefix)) {
-      continue;
-    }
-    const parts = pathname.slice(prefix.length).split("/");
-    if (parts.length !== 2) {
-      throw invalidTarget("expected owner/repo@reference");
-    }
-    const owner = decodePart(parts[0]);
-    const [repo, value] = decodePart(parts[1]).split("@", 2);
-    if (!partPattern.test(owner) || !partPattern.test(repo) || !value) {
-      throw invalidTarget("Invalid snippet identifier");
-    }
-    return { kind, owner, repo, value };
-  }
-  return null;
 }
 
 function decodePart(value) {
@@ -419,6 +341,35 @@ function invalidTarget(message) {
   const error: Error & { code?: string } = new Error(message);
   error.code = "INVALID_TARGET";
   return error;
+}
+
+function routeNotFound(request, response) {
+  const { pathname } = new URL(request.url!, "http://registry.local");
+  const isKnownEndpoint = pathname === "/health"
+    || /^\/api\/snippets\/[^/]+(?:\/[^/]+)?$/.test(pathname)
+    || /^\/api\/(?:resolve|download)\/[^/]+\/[^/]+$/.test(pathname)
+    || /^\/api\/editor\/[^/]+\/[^/]+(?:\/(?:file|commit))?$/.test(pathname);
+  if (isKnownEndpoint) {
+    return sendError(response, 405, "method not allowed");
+  }
+  sendError(response, 404, "not found");
+}
+
+function handleError(response, error: any) {
+  if (error.code === "ENOENT" || error.code === "NOT_FOUND") {
+    return sendError(response, 404, "snippet or reference not found");
+  }
+
+  if (error.code === "INVALID_TARGET") {
+    return sendError(response, 400, error.message);
+  }
+
+  console.error(error);
+  if (!response.headersSent) {
+    return sendError(response, 500, "internal server error");
+  }
+
+  response.destroy(error);
 }
 
 function sendJSON(response, status, value) {
