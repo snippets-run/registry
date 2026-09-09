@@ -214,7 +214,10 @@ async function requireUser(request, sessions, authProvider, oidcClientId, oidcSe
 async function exchangeCode(authProvider, clientId, secret, login, code) {
   const body = new URLSearchParams({ grant_type: "authorization_code", code, client_id: clientId, client_secret: secret, redirect_uri: login.redirectUri, code_verifier: login.verifier });
   const response = await fetch(new URL("/token", authProvider), { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
-  if (!response.ok) throw new Error("authentication exchange failed");
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 500);
+    throw new Error(`authentication exchange failed (${response.status}): ${detail}`);
+  }
   return response.json();
 }
 
