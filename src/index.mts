@@ -26,7 +26,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       response.end();
     },
     "GET /auth/me": async (request, response) => {
-      const user = await authProfile(request, authProvider);
+      const user = await requireUser(request, authProvider);
       sendJSON(response, user ? 200 : 401, user || { error: "authentication required" });
     },
     "GET /auth/index.mjs": async (_request, response) => {
