@@ -224,13 +224,7 @@ test("creates an empty bare repository for the editor", async (t) => {
 
 test("requires an OIDC session for snippet mutations and editor access", async (t) => {
   const snippet = await createSnippetRepository();
-  const registry = await startRegistry(snippet.root, { oidc: {
-    provider: "https://auth.example.test",
-    clientId: "registry",
-    clientSecret: "secret",
-    redirectUri: "https://registry.example.test/auth/callback",
-    webOrigin: "https://snippets.example.test",
-  } });
+  const registry = await startRegistry(snippet.root, { authProvider: "https://auth.example.test" });
   t.after(async () => {
     await registry.close();
     await snippet.remove();

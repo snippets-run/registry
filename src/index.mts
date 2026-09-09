@@ -1,5 +1,4 @@
 import { createServer } from "node:http";
-import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify } from "node:crypto";
 import { mkdir, readdir, realpath, rm, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -13,52 +12,26 @@ const snippetTypes = new Map([
   [".py", "python"],
 ]);
 
-export function createRegistryServer({ repositoryRoot, stagingRoot = join(repositoryRoot, ".editor-staging"), oidc }) {
-  const sessions = new Map();
+export function createRegistryServer({ repositoryRoot, stagingRoot = join(repositoryRoot, ".editor-staging"), authProvider = process.env.AUTH_PROVIDER }) {
   const routes = {
     "GET /health": async (_request, response) => sendJSON(response, 200, { status: "ok" }),
     "GET /auth/login": async (request, response) => {
-      if (!oidc) return sendError(response, 503, "authentication is not configured");
-      const returnTo = safeReturnTo(new URL(request.url!, "http://registry.local").searchParams.get("return_to"), oidc.webOrigin);
-      const state = randomBytes(32).toString("base64url");
-      const verifier = randomBytes(32).toString("base64url");
-      sessions.set(state, { verifier, returnTo, expires: Date.now() + 10 * 60 * 1000 });
-      const target = new URL("/authorize", oidc.provider);
-      target.search = new URLSearchParams({
-        response_type: "code",
-        client_id: oidc.clientId,
-        redirect_uri: oidc.redirectUri,
-        state,
-        code_challenge: createHash("sha256").update(verifier).digest("base64url"),
-        code_challenge_method: "S256",
-      }).toString();
-      response.writeHead(302, { Location: target.toString(), "set-cookie": cookie("snippet.login", state, 600) });
-      response.end();
-    },
-    "GET /auth/callback": async (request, response) => {
-      if (!oidc) return sendError(response, 503, "authentication is not configured");
-      const url = new URL(request.url!, "http://registry.local");
-      const cookies = requestCookies(request);
-      const login = sessions.get(cookies["snippet.login"]);
-      sessions.delete(cookies["snippet.login"]);
-      if (!login || login.expires < Date.now() || !sameValue(url.searchParams.get("state"), cookies["snippet.login"])) {
-        return sendError(response, 400, "invalid authentication state");
-      }
-      const tokens = await exchangeCode(oidc, url.searchParams.get("code") || "", login.verifier);
-      const user = await authenticatedUser(oidc, tokens);
-      const session = randomBytes(32).toString("base64url");
-      sessions.set(session, { user, expires: Date.now() + 7 * 24 * 60 * 60 * 1000 });
-      response.writeHead(302, { Location: login.returnTo, "set-cookie": [cookie("snippet.sid", session, 7 * 24 * 60 * 60), clearCookie("snippet.login")] });
+      if (!authProvider) return sendError(response, 503, "authentication is not configured");
+      const requestURL = new URL(request.url!, "http://registry.local");
+      const returnTo = safeReturnTo(requestURL.searchParams.get("return_to"), "https://snippets.run");
+      const loginURL = new URL("/login", authProvider);
+      loginURL.searchParams.set("url", returnTo);
+      response.writeHead(302, { Location: loginURL.toString() });
       response.end();
     },
     "GET /auth/me": async (request, response) => {
-      const user = currentUser(request, sessions);
+      const user = await authProfile(request, authProvider);
       sendJSON(response, user ? 200 : 401, user || { error: "authentication required" });
     },
     "POST /auth/logout": async (request, response) => {
-      const session = requestCookies(request)["snippet.sid"];
-      sessions.delete(session);
-      response.writeHead(204, { "set-cookie": clearCookie("snippet.sid") });
+      if (!authProvider) return response.writeHead(204).end();
+      const result = await fetch(new URL("/profile", authProvider), { method: "DELETE", headers: { Cookie: request.headers.cookie || "" } });
+      response.writeHead(result.status);
       response.end();
     },
     "GET /api/snippets/{owner}/{repo}": async (_request, response, params) => {
@@ -71,7 +44,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       sendJSON(response, 200, { owner, repo, type, entrypoint, commit, script });
     },
     "POST /api/snippets/{owner}/{repo}": async (request, response, params) => {
-      requireUser(request, sessions, oidc);
+      await requireUser(request, authProvider);
       const { owner, repo, type } = snippetTarget(params);
       const { content, message } = await createRequest(request);
       const root = await realpath(repositoryRoot);
@@ -80,7 +53,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       sendJSON(response, 201, { owner, repo, commit });
     },
     "DELETE /api/snippets/{owner}/{repo}": async (request, response, params) => {
-      requireUser(request, sessions, oidc);
+      await requireUser(request, authProvider);
       const { owner, repo } = snippetTarget(params);
       const root = await realpath(repositoryRoot);
       const repository = await repositoryPath(root, owner, repo);
@@ -108,7 +81,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       streamArchive(response, repository, await resolveCommit(repository, value));
     },
     "PUT /api/editor/{owner}/{repo}/file": async (request, response, params) => {
-      const user = requireUser(request, sessions, oidc);
+      await requireUser(request, authProvider);
       const { owner, repo } = snippetTarget(params);
       const path = new URL(request.url!, "http://registry.local").searchParams.get("path");
       if (!path || !validFilePath(path)) throw invalidTarget("invalid file path");
@@ -119,7 +92,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       sendJSON(response, 200, { path, staged: true });
     },
     "POST /api/editor/{owner}/{repo}/commit": async (request, response, params) => {
-      const user = requireUser(request, sessions, oidc);
+      await requireUser(request, authProvider);
       const { owner, repo } = snippetTarget(params);
       const root = await realpath(repositoryRoot);
       const repository = await repositoryPath(root, owner, repo);
@@ -127,7 +100,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       sendJSON(response, 201, { commit: await commitStaged(repository, index, await requestMessage(request)) });
     },
     "GET /api/editor/{owner}/{repo}": async (request, response, params) => {
-      requireUser(request, sessions, oidc);
+      await requireUser(request, authProvider);
       const { owner, repo } = snippetTarget(params);
       const root = await realpath(repositoryRoot);
       const repository = await repositoryPath(root, owner, repo);
@@ -139,7 +112,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
   const handler = router(routes, routeNotFound);
   return createServer(async (request, response) => {
     try {
-      response.setHeader("access-control-allow-origin", oidc?.webOrigin || "https://snippets.run");
+      response.setHeader("access-control-allow-origin", "https://snippets.run");
       response.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
       response.setHeader("access-control-allow-headers", "Content-Type, Accept");
       response.setHeader("access-control-allow-credentials", "true");
@@ -194,31 +167,15 @@ function decodePart(value) {
   }
 }
 
-function requestCookies(request) {
-  const header = request.headers.cookie || "";
-  return Object.fromEntries(header.split(";").filter(Boolean).map((part) => {
-    const separator = part.indexOf("=");
-    return [part.slice(0, separator).trim(), decodeURIComponent(part.slice(separator + 1).trim())];
-  }));
+async function authProfile(request, authProvider) {
+  if (!authProvider || !request.headers.cookie) return null;
+  const response = await fetch(new URL("/profile", authProvider), { headers: { Cookie: request.headers.cookie } });
+  return response.ok ? response.json() : null;
 }
 
-function cookie(name, value, maxAge) {
-  return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
-}
-
-function clearCookie(name) {
-  return cookie(name, "", 0);
-}
-
-function currentUser(request, sessions) {
-  const session = sessions.get(requestCookies(request)["snippet.sid"]);
-  if (!session || session.expires < Date.now()) return null;
-  return session.user;
-}
-
-function requireUser(request, sessions, oidc) {
-  if (!oidc) return null;
-  const user = currentUser(request, sessions);
+async function requireUser(request, authProvider) {
+  if (!authProvider) return null;
+  const user = await authProfile(request, authProvider);
   if (!user) throw authenticationRequired();
   return user;
 }
@@ -232,76 +189,10 @@ function safeReturnTo(value, webOrigin) {
   }
 }
 
-function sameValue(left, right) {
-  const a = Buffer.from(left || "");
-  const b = Buffer.from(right || "");
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
 function authenticationRequired() {
   const error: Error & { code?: string } = new Error("authentication required");
   error.code = "AUTH_REQUIRED";
   return error;
-}
-
-function parseToken(token) {
-  const parts = token.split(".");
-  if (parts.length !== 3) throw authenticationRequired();
-  try {
-    return {
-      header: JSON.parse(Buffer.from(parts[0], "base64url").toString()),
-      payload: JSON.parse(Buffer.from(parts[1], "base64url").toString()),
-      signature: Buffer.from(parts[2], "base64url"),
-      signed: Buffer.from(`${parts[0]}.${parts[1]}`),
-    };
-  } catch {
-    throw authenticationRequired();
-  }
-}
-
-async function verifyToken(token, oidc) {
-  const { header, payload, signature, signed } = parseToken(token);
-  if (header.alg !== "RS256" || typeof header.kid !== "string") throw authenticationRequired();
-  const response = await fetch(new URL("/.well-known/jwks.json", oidc.provider));
-  if (!response.ok) throw new Error("could not load authentication keys");
-  const keys = await response.json();
-  const jwk = keys.keys?.find((key) => key.kid === header.kid && key.kty === "RSA");
-  if (!jwk || !verify("RSA-SHA256", signed, createPublicKey({ key: jwk, format: "jwk" }), signature)) {
-    throw authenticationRequired();
-  }
-  const now = Math.floor(Date.now() / 1000);
-  const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-  if (payload.iss !== oidc.provider || !audiences.includes(oidc.clientId) || typeof payload.sub !== "string" || typeof payload.exp !== "number" || payload.exp <= now) {
-    throw authenticationRequired();
-  }
-  return payload;
-}
-
-async function exchangeCode(oidc, code, verifier) {
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code,
-    client_id: oidc.clientId,
-    client_secret: oidc.clientSecret,
-    redirect_uri: oidc.redirectUri,
-    code_verifier: verifier,
-  });
-  const response = await fetch(new URL("/token", oidc.provider), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body,
-  });
-  if (!response.ok) throw new Error("authentication exchange failed");
-  return response.json();
-}
-
-async function authenticatedUser(oidc, tokens) {
-  await verifyToken(tokens.id_token, oidc);
-  const response = await fetch(new URL("/userinfo", oidc.provider), {
-    headers: { Authorization: `Bearer ${tokens.access_token}`, "X-Auth-Audience": oidc.clientId },
-  });
-  if (!response.ok) throw new Error("could not load authenticated user");
-  return response.json();
 }
 
 async function repositoryPath(root, owner, repo) {
@@ -657,23 +548,13 @@ if (import.meta.main) {
     throw new Error("SNIPPET_REPOSITORIES_PATH is required");
   }
 
-  const provider = process.env.AUTH_PROVIDER;
-  if (!provider) throw new Error("AUTH_PROVIDER is required");
-  const oidc = {
-    provider: new URL(provider).origin,
-    clientId: process.env.OIDC_CLIENT_ID,
-    clientSecret: process.env.OIDC_CLIENT_SECRET,
-    redirectUri: process.env.OIDC_REDIRECT_URI,
-    webOrigin: new URL(process.env.WEB_ORIGIN || "https://snippets.run").origin,
-  };
-  if (!oidc.clientId || !oidc.clientSecret || !oidc.redirectUri) {
-    throw new Error("OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, and OIDC_REDIRECT_URI are required");
-  }
+  const authProvider = process.env.AUTH_PROVIDER;
+  if (!authProvider) throw new Error("AUTH_PROVIDER is required");
 
   const port = Number.parseInt(process.env.PORT ?? "3000", 10);
   const server = createRegistryServer({
     repositoryRoot,
-    oidc,
+    authProvider,
     ...(process.env.SNIPPET_STAGING_PATH ? { stagingRoot: process.env.SNIPPET_STAGING_PATH } : {}),
   });
   server.listen(port, "0.0.0.0", () => {
