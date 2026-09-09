@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createPublicKey, verify } from "node:crypto";
 import { mkdir, readdir, realpath, rm, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
@@ -27,6 +28,12 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
     "GET /auth/me": async (request, response) => {
       const user = await authProfile(request, authProvider);
       sendJSON(response, user ? 200 : 401, user || { error: "authentication required" });
+    },
+    "GET /auth/index.mjs": async (_request, response) => {
+      if (!authProvider) return sendError(response, 503, "authentication is not configured");
+      const result = await fetch(new URL("/index.mjs", authProvider));
+      response.writeHead(result.status, { "content-type": "text/javascript" });
+      response.end(await result.text());
     },
     "POST /auth/logout": async (request, response) => {
       if (!authProvider) return response.writeHead(204).end();
@@ -175,9 +182,39 @@ async function authProfile(request, authProvider) {
 
 async function requireUser(request, authProvider) {
   if (!authProvider) return null;
+  const authorization = String(request.headers.authorization || "");
+  if (authorization.startsWith("Bearer ")) return verifyToken(authorization.slice(7), authProvider);
   const user = await authProfile(request, authProvider);
   if (!user) throw authenticationRequired();
   return user;
+}
+
+async function verifyToken(token, authProvider) {
+  const parts = token.split(".");
+  if (parts.length !== 3) throw authenticationRequired();
+  let header;
+  let payload;
+  try {
+    header = JSON.parse(Buffer.from(parts[0], "base64url").toString());
+    payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+  } catch {
+    throw authenticationRequired();
+  }
+  if (header.alg !== "RS256" || typeof header.kid !== "string") throw authenticationRequired();
+  const response = await fetch(new URL("/.well-known/jwks.json", authProvider));
+  if (!response.ok) throw new Error("could not load authentication keys");
+  const keys = await response.json();
+  const jwk = keys.keys?.find((key) => key.kid === header.kid && key.kty === "RSA");
+  const signature = Buffer.from(parts[2], "base64url");
+  if (!jwk || !verify("RSA-SHA256", Buffer.from(`${parts[0]}.${parts[1]}`), createPublicKey({ key: jwk, format: "jwk" }), signature)) {
+    throw authenticationRequired();
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (payload.iss !== authProvider || !audiences.includes("registry") || typeof payload.sub !== "string" || typeof payload.exp !== "number" || payload.exp <= now) {
+    throw authenticationRequired();
+  }
+  return payload;
 }
 
 function safeReturnTo(value, webOrigin) {
@@ -498,7 +535,7 @@ function conflict(message) {
 function routeNotFound(request, response) {
   const { pathname } = new URL(request.url!, "http://registry.local");
   const isKnownEndpoint = pathname === "/health"
-    || /^\/auth\/(?:login|callback|me|logout)$/.test(pathname)
+    || /^\/auth\/(?:login|callback|me|logout|index\.mjs)$/.test(pathname)
     || /^\/api\/snippets\/[^/]+(?:\/[^/]+)?$/.test(pathname)
     || /^\/api\/(?:resolve|download)\/[^/]+\/[^/]+$/.test(pathname)
     || /^\/api\/editor\/[^/]+\/[^/]+(?:\/(?:file|commit))?$/.test(pathname);

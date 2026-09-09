@@ -139,6 +139,6 @@ The production image includes Node.js and Git, listens on port `3000` by default
 
 ## Authentication
 
-Set `AUTH_PROVIDER` to the authentication provider origin. The registry forwards the provider's shared session cookie to `/profile`, and proxies `/login` and logout; no OIDC client credentials are stored by the registry.
+Set `AUTH_PROVIDER` to the authentication provider origin. The browser client uses the provider's short-lived `registry` audience token, while same-domain deployments may use the shared session cookie. The registry proxies the provider browser client, login, and logout; no OIDC client credentials are stored by the registry.
 
 The browser signs in through `/auth/login`; the registry performs the authorization-code exchange and stores an HttpOnly, Secure session cookie. Snippet creation, deletion, and all editor endpoints require that session. Public listing, resolve, detail, and download endpoints remain readable.
