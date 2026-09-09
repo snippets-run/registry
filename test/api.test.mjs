@@ -221,3 +221,28 @@ test("creates an empty bare repository for the editor", async (t) => {
   assert.equal(committed.status, 201);
   assert.match((await committed.json()).commit, /^[0-9a-f]{40}$/);
 });
+
+test("requires an OIDC session for snippet mutations and editor access", async (t) => {
+  const snippet = await createSnippetRepository();
+  const registry = await startRegistry(snippet.root, { oidc: {
+    provider: "https://auth.example.test",
+    clientId: "registry",
+    clientSecret: "secret",
+    redirectUri: "https://registry.example.test/auth/callback",
+    webOrigin: "https://snippets.example.test",
+  } });
+  t.after(async () => {
+    await registry.close();
+    await snippet.remove();
+  });
+
+  const create = await fetch(`${registry.url}/api/snippets/acme/new.sh`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(create.status, 401);
+
+  const editor = await fetch(`${registry.url}/api/editor/acme/hello.sh`);
+  assert.equal(editor.status, 401);
+});

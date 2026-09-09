@@ -136,3 +136,9 @@ docker push ghcr.io/snippets-run/registry:latest
 ```
 
 The production image includes Node.js and Git, listens on port `3000` by default, and expects repositories at `/repositories`.
+
+## Authentication
+
+The registry requires an OIDC configuration when started as a service. Set `AUTH_PROVIDER` to the authentication provider origin, plus `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and the registered `OIDC_REDIRECT_URI`. Set `WEB_ORIGIN` when the browser is hosted somewhere other than `https://snippets.run`.
+
+The browser signs in through `/auth/login`; the registry performs the authorization-code exchange and stores an HttpOnly, Secure session cookie. Snippet creation, deletion, and all editor endpoints require that session. Public listing, resolve, detail, and download endpoints remain readable.

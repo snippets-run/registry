@@ -27,8 +27,8 @@ export async function createSnippetRepository(options = {}) {
   return { root, repository, commit, remove: () => rm(root, { recursive: true, force: true }) };
 }
 
-export async function startRegistry(repositoryRoot) {
-  const server = createRegistryServer({ repositoryRoot });
+export async function startRegistry(repositoryRoot, options = {}) {
+  const server = createRegistryServer({ repositoryRoot, ...options });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const { port } = server.address();
