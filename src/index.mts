@@ -13,13 +13,13 @@ const snippetTypes = new Map([
   [".py", "python"],
 ]);
 
-export function createRegistryServer({ repositoryRoot, stagingRoot = join(repositoryRoot, ".editor-staging"), authProvider = process.env.AUTH_PROVIDER, oidcSecret = process.env.OIDC_CLIENT_SECRET }) {
+export function createRegistryServer({ repositoryRoot, stagingRoot = join(repositoryRoot, ".editor-staging"), authProvider = process.env.AUTH_PROVIDER, oidcClientId = process.env.OIDC_CLIENT_ID, oidcSecret = process.env.OIDC_CLIENT_SECRET }) {
   const sessions = new Map();
   const logins = new Map();
   const routes = {
     "GET /health": async (_request, response) => sendJSON(response, 200, { status: "ok" }),
     "GET /auth/login": async (request, response) => {
-      if (!authProvider) return sendError(response, 503, "authentication is not configured");
+      if (!authProvider || !oidcClientId || !oidcSecret) return sendError(response, 503, "authentication is not configured");
       const requestURL = new URL(request.url!, "http://registry.local");
       const returnTo = safeReturnTo(requestURL.searchParams.get("return_to"), "https://snippets.run");
       const redirectUri = externalOrigin(request) + "/auth/callback";
@@ -27,19 +27,19 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       const verifier = randomBytes(32).toString("base64url");
       logins.set(state, { verifier, redirectUri, returnTo, expires: Date.now() + 10 * 60 * 1000 });
       const loginURL = new URL("/authorize", authProvider);
-      loginURL.search = new URLSearchParams({ response_type: "code", client_id: "registry", redirect_uri: redirectUri, state, code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256" }).toString();
+      loginURL.search = new URLSearchParams({ response_type: "code", client_id: oidcClientId, redirect_uri: redirectUri, state, code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256" }).toString();
       response.writeHead(302, { Location: loginURL.toString(), "set-cookie": sessionCookie("snippet.login", state, 600) });
       response.end();
     },
     "GET /auth/callback": async (request, response) => {
-      if (!authProvider || !oidcSecret) return sendError(response, 503, "authentication is not configured");
+      if (!authProvider || !oidcClientId || !oidcSecret) return sendError(response, 503, "authentication is not configured");
       const url = new URL(request.url!, "http://registry.local");
       const state = requestCookies(request)["snippet.login"];
       const login = logins.get(state);
       logins.delete(state);
       if (!login || login.expires < Date.now() || !sameValue(url.searchParams.get("state"), state)) return sendError(response, 400, "invalid authentication state");
-      const token = await exchangeCode(authProvider, oidcSecret, login, url.searchParams.get("code") || "");
-      const user = await userInfo(authProvider, token.access_token);
+      const token = await exchangeCode(authProvider, oidcClientId, oidcSecret, login, url.searchParams.get("code") || "");
+      const user = await userInfo(authProvider, oidcClientId, token.access_token);
       const session = randomBytes(32).toString("base64url");
       sessions.set(session, { user, expires: Date.now() + 7 * 24 * 60 * 60 * 1000 });
       response.writeHead(302, { Location: login.returnTo, "set-cookie": [sessionCookie("snippet.sid", session, 7 * 24 * 60 * 60), sessionCookie("snippet.login", "", 0)] });
@@ -64,7 +64,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       sendJSON(response, 200, { owner, repo, type, entrypoint, commit, script });
     },
     "POST /api/snippets/{owner}/{repo}": async (request, response, params) => {
-      await requireUser(request, sessions, authProvider, oidcSecret);
+      await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
       const { owner, repo, type } = snippetTarget(params);
       const { content, message } = await createRequest(request);
       const root = await realpath(repositoryRoot);
@@ -73,7 +73,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       sendJSON(response, 201, { owner, repo, commit });
     },
     "DELETE /api/snippets/{owner}/{repo}": async (request, response, params) => {
-      await requireUser(request, sessions, authProvider, oidcSecret);
+      await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
       const { owner, repo } = snippetTarget(params);
       const root = await realpath(repositoryRoot);
       const repository = await repositoryPath(root, owner, repo);
@@ -101,7 +101,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       streamArchive(response, repository, await resolveCommit(repository, value));
     },
     "PUT /api/editor/{owner}/{repo}/file": async (request, response, params) => {
-      await requireUser(request, sessions, authProvider, oidcSecret);
+      await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
       const { owner, repo } = snippetTarget(params);
       const path = new URL(request.url!, "http://registry.local").searchParams.get("path");
       if (!path || !validFilePath(path)) throw invalidTarget("invalid file path");
@@ -112,7 +112,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       sendJSON(response, 200, { path, staged: true });
     },
     "POST /api/editor/{owner}/{repo}/commit": async (request, response, params) => {
-      await requireUser(request, sessions, authProvider, oidcSecret);
+      await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
       const { owner, repo } = snippetTarget(params);
       const root = await realpath(repositoryRoot);
       const repository = await repositoryPath(root, owner, repo);
@@ -120,7 +120,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       sendJSON(response, 201, { commit: await commitStaged(repository, index, await requestMessage(request)) });
     },
     "GET /api/editor/{owner}/{repo}": async (request, response, params) => {
-      await requireUser(request, sessions, authProvider, oidcSecret);
+      await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
       const { owner, repo } = snippetTarget(params);
       const root = await realpath(repositoryRoot);
       const repository = await repositoryPath(root, owner, repo);
@@ -203,23 +203,23 @@ function currentUser(request, sessions) {
   return session && session.expires > Date.now() ? session.user : null;
 }
 
-async function requireUser(request, sessions, authProvider, oidcSecret) {
-  if (!authProvider && !oidcSecret) return null;
-  if (!authProvider || !oidcSecret) throw authenticationRequired();
+async function requireUser(request, sessions, authProvider, oidcClientId, oidcSecret) {
+  if (!authProvider && !oidcClientId && !oidcSecret) return null;
+  if (!authProvider || !oidcClientId || !oidcSecret) throw authenticationRequired();
   const user = currentUser(request, sessions);
   if (!user) throw authenticationRequired();
   return user;
 }
 
-async function exchangeCode(authProvider, secret, login, code) {
-  const body = new URLSearchParams({ grant_type: "authorization_code", code, client_id: "registry", client_secret: secret, redirect_uri: login.redirectUri, code_verifier: login.verifier });
+async function exchangeCode(authProvider, clientId, secret, login, code) {
+  const body = new URLSearchParams({ grant_type: "authorization_code", code, client_id: clientId, client_secret: secret, redirect_uri: login.redirectUri, code_verifier: login.verifier });
   const response = await fetch(new URL("/token", authProvider), { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
   if (!response.ok) throw new Error("authentication exchange failed");
   return response.json();
 }
 
-async function userInfo(authProvider, accessToken) {
-  const response = await fetch(new URL("/userinfo", authProvider), { headers: { Authorization: `Bearer ${accessToken}`, "X-Auth-Audience": "registry" } });
+async function userInfo(authProvider, clientId, accessToken) {
+  const response = await fetch(new URL("/userinfo", authProvider), { headers: { Authorization: `Bearer ${accessToken}`, "X-Auth-Audience": clientId } });
   if (!response.ok) throw new Error("could not load authenticated user");
   return response.json();
 }
@@ -605,12 +605,14 @@ if (import.meta.main) {
   const authProvider = process.env.AUTH_PROVIDER;
   if (!authProvider) throw new Error("AUTH_PROVIDER is required");
   const oidcSecret = process.env.OIDC_CLIENT_SECRET;
-  if (!oidcSecret) throw new Error("OIDC_CLIENT_SECRET is required");
+  const oidcClientId = process.env.OIDC_CLIENT_ID;
+  if (!oidcClientId || !oidcSecret) throw new Error("OIDC_CLIENT_ID and OIDC_CLIENT_SECRET are required");
 
   const port = Number.parseInt(process.env.PORT ?? "3000", 10);
   const server = createRegistryServer({
     repositoryRoot,
     authProvider,
+    oidcClientId,
     oidcSecret,
     ...(process.env.SNIPPET_STAGING_PATH ? { stagingRoot: process.env.SNIPPET_STAGING_PATH } : {}),
   });
