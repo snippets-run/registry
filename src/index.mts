@@ -7,6 +7,7 @@ import router from "micro-router";
 
 const partPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const commitPattern = /^[0-9a-f]{7,64}$/;
+const debugEnabled = Boolean(process.env.DEBUG);
 const snippetTypes = new Map([
   [".sh", "bash"],
   [".js", "node"],
@@ -28,6 +29,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       logins.set(state, { verifier, redirectUri, returnTo, expires: Date.now() + 10 * 60 * 1000 });
       const loginURL = new URL("/authorize", authProvider);
       loginURL.search = new URLSearchParams({ response_type: "code", client_id: oidcClientId, redirect_uri: redirectUri, state, code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256" }).toString();
+      debug("OIDC login", { provider: authProvider, clientId: oidcClientId, redirectUri, returnTo });
       response.writeHead(302, { Location: loginURL.toString(), "set-cookie": sessionCookie("snippet.login", state, 600) });
       response.end();
     },
@@ -37,6 +39,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       const state = requestCookies(request)["snippet.login"];
       const login = logins.get(state);
       logins.delete(state);
+      debug("OIDC callback", { redirectUri: externalOrigin(request) + "/auth/callback", hasState: Boolean(state), hasCode: Boolean(url.searchParams.get("code")), hasError: Boolean(url.searchParams.get("error")) });
       if (!login || login.expires < Date.now() || !sameValue(url.searchParams.get("state"), state)) return sendError(response, 400, "invalid authentication state");
       const token = await exchangeCode(authProvider, oidcClientId, oidcSecret, login, url.searchParams.get("code") || "");
       const user = await userInfo(authProvider, oidcClientId, token.access_token);
@@ -213,12 +216,19 @@ async function requireUser(request, sessions, authProvider, oidcClientId, oidcSe
 
 async function exchangeCode(authProvider, clientId, secret, login, code) {
   const body = new URLSearchParams({ grant_type: "authorization_code", code, client_id: clientId, client_secret: secret, redirect_uri: login.redirectUri, code_verifier: login.verifier });
+  debug("OIDC token exchange", { provider: authProvider, clientId, redirectUri: login.redirectUri, hasCode: Boolean(code) });
   const response = await fetch(new URL("/token", authProvider), { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 500);
+    debug("OIDC token exchange failed", { status: response.status, detail });
     throw new Error(`authentication exchange failed (${response.status}): ${detail}`);
   }
+  debug("OIDC token exchange succeeded", { status: response.status });
   return response.json();
+}
+
+function debug(message, details) {
+  if (debugEnabled) console.log(`[debug] ${message}`, details || "");
 }
 
 async function userInfo(authProvider, clientId, accessToken) {
