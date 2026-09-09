@@ -186,3 +186,38 @@ test("creates and deletes snippets through the API", async (t) => {
   assert.deepEqual(await deleted.json(), { owner: "acme", repo: "goodbye.py", deleted: true });
   assert.equal((await fetch(`${registry.url}/api/snippets/acme/goodbye.py`)).status, 404);
 });
+
+test("creates an empty bare repository for the editor", async (t) => {
+  const snippet = await createSnippetRepository();
+  const registry = await startRegistry(snippet.root);
+  t.after(async () => {
+    await registry.close();
+    await snippet.remove();
+  });
+
+  const created = await fetch(`${registry.url}/api/snippets/acme/blank.sh`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(created.status, 201);
+  assert.deepEqual(await created.json(), { owner: "acme", repo: "blank.sh", commit: null });
+
+  const workspace = await fetch(`${registry.url}/api/editor/acme/blank.sh`);
+  assert.equal(workspace.status, 200);
+  assert.deepEqual((await workspace.json()).files, []);
+
+  const staged = await fetch(`${registry.url}/api/editor/acme/blank.sh/file?path=main.sh`, {
+    method: "PUT",
+    body: "printf 'hello\\n'\n",
+  });
+  assert.equal(staged.status, 200);
+
+  const committed = await fetch(`${registry.url}/api/editor/acme/blank.sh/commit`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Add entrypoint" }),
+  });
+  assert.equal(committed.status, 201);
+  assert.match((await committed.json()).commit, /^[0-9a-f]{40}$/);
+});

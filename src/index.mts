@@ -29,8 +29,8 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       const { content, message } = await createRequest(request);
       const root = await realpath(repositoryRoot);
       const repository = join(root, owner, repo);
-      await createSnippet(repository, type, content, message);
-      sendJSON(response, 201, { owner, repo, commit: await resolveCommit(repository, "HEAD") });
+      const commit = await createSnippet(repository, type, content, message);
+      sendJSON(response, 201, { owner, repo, commit });
     },
     "DELETE /api/snippets/{owner}/{repo}": async (_request, response, params) => {
       const { owner, repo } = snippetTarget(params);
@@ -186,6 +186,7 @@ async function createSnippet(repository, type, content, message) {
   await mkdir(join(repository, ".."), { recursive: true });
   const initialized = await git(join(repository, ".."), ["init", "--bare", "--initial-branch", "main", repository]);
   if (initialized.code !== 0) throw new Error("could not create snippet repository");
+  if (content === undefined) return null;
   const entrypoint = type === "bash" ? "main.sh" : type === "python" ? "main.py" : "index.mjs";
   const blob = await git(repository, ["hash-object", "-w", "--stdin"], {}, content);
   if (blob.code !== 0) throw new Error("could not create snippet content");
@@ -200,16 +201,17 @@ async function createSnippet(repository, type, content, message) {
     if (commit.code !== 0) throw new Error("could not create snippet commit");
     const updated = await git(repository, ["update-ref", "refs/heads/main", commit.stdout.trim()]);
     if (updated.code !== 0) throw new Error("could not publish snippet");
+    return commit.stdout.trim();
   } finally {
     await rm(index, { force: true });
   }
 }
 
 async function editorSnippet(repository, target, index) {
-  const head = await resolveCommit(repository, "HEAD");
-  const files = await trackedFiles(repository, head);
+  const head = await optionalCommit(repository);
+  const files = head ? await trackedFiles(repository, head) : [];
   const staged = await stagedFiles(repository, index);
-  const history = await gitLines(repository, ["log", "-12", "--format=%H%x00%h%x00%s%x00%aI"]);
+  const history = head ? await gitLines(repository, ["log", "-12", "--format=%H%x00%h%x00%s%x00%aI"]) : [];
   return {
     owner: target.owner,
     repo: target.repo,
@@ -246,8 +248,11 @@ async function stageFile(repository, index, path, content) {
     await stat(index);
   } catch (error: any) {
     if (error.code !== "ENOENT") throw error;
-    const initialized = await git(repository, ["read-tree", "HEAD"], environment);
-    if (initialized.code !== 0) throw new Error("could not prepare staging area");
+    const head = await optionalCommit(repository);
+    if (head) {
+      const initialized = await git(repository, ["read-tree", head], environment);
+      if (initialized.code !== 0) throw new Error("could not prepare staging area");
+    }
   }
   const blob = await git(repository, ["hash-object", "-w", "--stdin"], environment, content);
   if (blob.code !== 0 || !/^[0-9a-f]{40,64}$/.test(blob.stdout.trim())) throw new Error("could not stage file");
@@ -261,8 +266,15 @@ async function commitStaged(repository, index, message) {
   const changes = await git(repository, ["diff", "--cached", "--quiet"], environment);
   if (changes.code === 0) throw invalidTarget("no staged changes to commit");
   if (changes.code !== 1) throw new Error("could not inspect staged changes");
-  const result = await git(repository, ["commit", "--no-verify", "-m", message || "Update snippet"], environment);
-  if (result.code !== 0) throw new Error("could not commit staged changes");
+  const tree = await git(repository, ["write-tree"], environment);
+  if (tree.code !== 0) throw new Error("could not prepare snippet commit");
+  const parent = await optionalCommit(repository);
+  const arguments_ = ["commit-tree", tree.stdout.trim(), "-m", message || "Update snippet"];
+  if (parent) arguments_.push("-p", parent);
+  const result = await git(repository, arguments_, {}, undefined, true);
+  if (result.code !== 0) throw new Error("could not create snippet commit");
+  const updated = await git(repository, ["update-ref", "refs/heads/main", result.stdout.trim()]);
+  if (updated.code !== 0) throw new Error("could not publish snippet");
   const commit = await resolveCommit(repository, "HEAD");
   await rm(index, { force: true });
   return commit;
@@ -294,7 +306,12 @@ async function createRequest(request) {
   }
   let value: any;
   try { value = JSON.parse(body); } catch { throw invalidTarget("expected JSON request body"); }
-  if (typeof value.content !== "string") throw invalidTarget("snippet content is required");
+  if (value.content !== undefined && typeof value.content !== "string") throw invalidTarget("snippet content must be a string");
+  if (value.content === undefined) {
+    const message = typeof value.message === "string" ? value.message.trim() : "";
+    if (message.length > 500 || message.includes("\0")) throw invalidTarget("invalid commit message");
+    return { content: undefined, message };
+  }
   if (value.content.length > 1024 * 1024) throw invalidTarget("file content exceeds 1 MB");
   const message = typeof value.message === "string" ? value.message.trim() : "";
   if (message.length > 500 || message.includes("\0")) throw invalidTarget("invalid commit message");
@@ -343,6 +360,11 @@ async function fileAtCommit(repository, commit, path) {
     throw error;
   }
   return result.stdout;
+}
+
+async function optionalCommit(repository) {
+  const result = await git(repository, ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"]);
+  return result.code === 0 ? result.stdout.trim() : null;
 }
 
 async function resolveCommit(repository, ref) {
