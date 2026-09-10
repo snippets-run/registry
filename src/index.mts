@@ -14,15 +14,16 @@ const snippetTypes = new Map([
   [".py", "python"],
 ]);
 
-export function createRegistryServer({ repositoryRoot, stagingRoot = join(repositoryRoot, ".editor-staging"), authProvider = process.env.AUTH_PROVIDER, oidcClientId = process.env.OIDC_CLIENT_ID, oidcSecret = process.env.OIDC_CLIENT_SECRET }) {
+export function createRegistryServer({ repositoryRoot, stagingRoot = join(repositoryRoot, ".editor-staging"), authProvider = process.env.AUTH_PROVIDER, oidcClientId = process.env.OIDC_CLIENT_ID, oidcSecret = process.env.OIDC_CLIENT_SECRET, reviewOrigins = [] as string[], metadata }) {
   const sessions = new Map();
   const logins = new Map();
+  const allowedOrigins = new Set(["https://snippets.run", ...reviewOrigins].filter((origin) => /^https:\/\/[^/]+$/.test(origin)));
   const routes = {
     "GET /health": async (_request, response) => sendJSON(response, 200, { status: "ok" }),
     "GET /auth/login": async (request, response) => {
       if (!authProvider || !oidcClientId || !oidcSecret) return sendError(response, 503, "authentication is not configured");
       const requestURL = new URL(request.url!, "http://registry.local");
-      const returnTo = safeReturnTo(requestURL.searchParams.get("return_to"), "https://snippets.run");
+      const returnTo = safeReturnTo(requestURL.searchParams.get("return_to"), allowedOrigins);
       const redirectUri = externalOrigin(request) + "/auth/callback";
       const state = randomBytes(32).toString("base64url");
       const verifier = randomBytes(32).toString("base64url");
@@ -74,6 +75,7 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       const repository = join(root, owner, repo);
       const commit = await createSnippet(repository, type, content, message);
       if (user) await linkSnippet(stagingRoot, owner, repo, user);
+      if (metadata && user) await metadata.upsert({ owner, repo, type, ownerUserId: userIdentifier(user), public: true });
       sendJSON(response, 201, { owner, repo, commit });
     },
     "DELETE /api/snippets/{owner}/{repo}": async (request, response, params) => {
@@ -84,22 +86,23 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       await rm(repository, { recursive: true });
       await rm(join(stagingRoot, owner, `${repo}.index`), { force: true });
       await rm(join(stagingRoot, "owners", owner, `${repo}.owner`), { force: true });
+      if (metadata) await metadata.remove(owner, repo);
       sendJSON(response, 200, { owner, repo, deleted: true });
     },
     "GET /api/snippets/mine": async (request, response) => {
       const user = await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
       const root = await realpath(repositoryRoot);
-      sendJSON(response, 200, await listUserSnippets(root, stagingRoot, user));
+      sendJSON(response, 200, await (metadata ? metadata.listUser(userIdentifier(user)) : listUserSnippets(root, stagingRoot, user)));
     },
     "GET /api/snippets": async (request, response) => {
       const query = new URL(request.url!, "http://registry.local").searchParams.get("q") || "";
       const root = await realpath(repositoryRoot);
-      sendJSON(response, 200, await searchSnippets(root, query));
+      sendJSON(response, 200, await (metadata ? metadata.search(query) : searchSnippets(root, query)));
     },
     "GET /api/snippets/{owner}": async (_request, response, params) => {
       const owner = validPart(params.owner);
       const root = await realpath(repositoryRoot);
-      sendJSON(response, 200, await listOwnerSnippets(root, owner));
+      sendJSON(response, 200, await (metadata ? metadata.listOwner(owner) : listOwnerSnippets(root, owner)));
     },
     "GET /api/resolve/{owner}/{target}": async (_request, response, params) => {
       const { owner, repo, value, type } = referenceTarget(params);
@@ -147,11 +150,13 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
   const handler = router(routes, routeNotFound);
   return createServer(async (request, response) => {
     try {
-      response.setHeader("access-control-allow-origin", "https://snippets.run");
+      const origin = request.headers.origin;
+      if (origin && allowedOrigins.has(origin)) response.setHeader("access-control-allow-origin", origin);
       response.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
       response.setHeader("access-control-allow-headers", "Content-Type, Accept");
       response.setHeader("access-control-allow-credentials", "true");
       if (request.method === "OPTIONS") {
+        if (origin && !allowedOrigins.has(origin)) return sendError(response, 403, "origin not allowed");
         response.writeHead(204);
         return response.end();
       }
@@ -259,12 +264,12 @@ function sameValue(left, right) {
   return Boolean(left && right && left === right);
 }
 
-function safeReturnTo(value, webOrigin) {
+function safeReturnTo(value, allowedOrigins) {
   try {
-    const target = new URL(value || webOrigin);
-    return target.origin === webOrigin ? target.toString() : webOrigin;
+    const target = new URL(value || "https://snippets.run");
+    return allowedOrigins.has(target.origin) ? target.toString() : "https://snippets.run";
   } catch {
-    return webOrigin;
+    return "https://snippets.run";
   }
 }
 
@@ -272,6 +277,57 @@ function authenticationRequired() {
   const error: Error & { code?: string } = new Error("authentication required");
   error.code = "AUTH_REQUIRED";
   return error;
+}
+
+function userIdentifier(user) {
+  return user?.id || user?.email || "";
+}
+
+async function createMetadataStore(databaseURL, repositoryRoot) {
+  const source = await (await fetch(new URL("/index.mjs", databaseURL))).text();
+  const database = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+  const migrations = [
+    "CREATE TABLE IF NOT EXISTS registry_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS registry_snippets (owner TEXT NOT NULL, repo TEXT NOT NULL, type TEXT NOT NULL, owner_user_id TEXT, public INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (owner, repo))",
+    "CREATE INDEX IF NOT EXISTS registry_snippets_owner_idx ON registry_snippets (owner, public, repo)",
+    "CREATE INDEX IF NOT EXISTS registry_snippets_user_idx ON registry_snippets (owner_user_id, updated_at)",
+  ];
+  const applied = await database.all("SELECT version FROM registry_migrations ORDER BY version");
+  const versions = new Set(applied.map((row) => row.version));
+  const statements = [] as Array<{ s: string; d: Array<string | number>; m: string }>;
+  for (let index = 0; index < migrations.length; index++) {
+    if (!versions.has(index + 1)) {
+      statements.push({ s: migrations[index], d: [], m: "run" });
+      statements.push({ s: "INSERT INTO registry_migrations (version, applied_at) VALUES (?, ?)", d: [index + 1, new Date().toISOString()], m: "run" });
+    }
+  }
+  if (statements.length) await database.transaction(statements);
+  const owners = await readdir(repositoryRoot, { withFileTypes: true });
+  for (const owner of owners) {
+    if (!owner.isDirectory() || owner.name.startsWith(".")) continue;
+    for (const item of await listOwnerSnippets(repositoryRoot, owner.name)) {
+      await database.run("INSERT OR IGNORE INTO registry_snippets (owner, repo, type, public, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)", [item.owner, item.repo, item.type, new Date().toISOString(), new Date().toISOString()]);
+    }
+  }
+  return {
+    async upsert(item) {
+      const now = new Date().toISOString();
+      await database.run("INSERT INTO registry_snippets (owner, repo, type, owner_user_id, public, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner, repo) DO UPDATE SET type = excluded.type, owner_user_id = excluded.owner_user_id, public = excluded.public, updated_at = excluded.updated_at", [item.owner, item.repo, item.type, item.ownerUserId, item.public ? 1 : 0, now, now]);
+    },
+    async remove(owner, repo) {
+      await database.run("DELETE FROM registry_snippets WHERE owner = ? AND repo = ?", [owner, repo]);
+    },
+    async listOwner(owner) {
+      return database.all("SELECT owner, repo, type FROM registry_snippets WHERE owner = ? AND public = 1 ORDER BY repo", [owner]);
+    },
+    async listUser(ownerUserId) {
+      return database.all("SELECT owner, repo, type FROM registry_snippets WHERE owner_user_id = ? ORDER BY owner, repo", [ownerUserId]);
+    },
+    async search(query) {
+      const value = `%${query.trim().toLowerCase()}%`;
+      return database.all("SELECT owner, repo, type FROM registry_snippets WHERE public = 1 AND (lower(owner) LIKE ? OR lower(repo) LIKE ?) ORDER BY owner, repo", [value, value]);
+    },
+  };
 }
 
 async function repositoryPath(root, owner, repo) {
@@ -679,6 +735,7 @@ if (import.meta.main) {
   const oidcSecret = process.env.OIDC_CLIENT_SECRET;
   const oidcClientId = process.env.OIDC_CLIENT_ID;
   if (!oidcClientId || !oidcSecret) throw new Error("OIDC_CLIENT_ID and OIDC_CLIENT_SECRET are required");
+  const metadata = process.env.DATABASE_URL ? await createMetadataStore(process.env.DATABASE_URL, repositoryRoot) : undefined;
 
   const port = Number.parseInt(process.env.PORT ?? "3000", 10);
   const server = createRegistryServer({
@@ -686,6 +743,8 @@ if (import.meta.main) {
     authProvider,
     oidcClientId,
     oidcSecret,
+    metadata,
+    reviewOrigins: String(process.env.REVIEW_ORIGINS || process.env.REVIEW_ORIGIN || "").split(",").map((origin) => origin.trim()).filter(Boolean),
     ...(process.env.SNIPPET_STAGING_PATH ? { stagingRoot: process.env.SNIPPET_STAGING_PATH } : {}),
   });
   server.listen(port, "0.0.0.0", () => {
