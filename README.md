@@ -142,3 +142,4 @@ The production image includes Node.js and Git, listens on port `3000` by default
 Set `AUTH_PROVIDER` to the authentication provider origin, `OIDC_CLIENT_ID` to the registered client ID, and `OIDC_CLIENT_SECRET` to that client's secret. The registry performs the authorization-code exchange with PKCE and stores its own HttpOnly session cookie; the provider session cookie is only used while the browser is navigating through the provider's `/authorize` endpoint.
 
 The browser signs in through `/auth/login`; the registry performs the authorization-code exchange and stores an HttpOnly, Secure session cookie. Snippet creation, deletion, and all editor endpoints require that session. Public listing, resolve, detail, and download endpoints remain readable.
+`GET /api/snippets/mine` lists snippets created by the authenticated account.

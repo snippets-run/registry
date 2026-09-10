@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readdir, realpath, rm, stat } from "node:fs/promises";
+import { mkdir, readdir, realpath, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import router from "micro-router";
@@ -67,12 +67,13 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       sendJSON(response, 200, { owner, repo, type, entrypoint, commit, script });
     },
     "POST /api/snippets/{owner}/{repo}": async (request, response, params) => {
-      await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
+      const user = await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
       const { owner, repo, type } = snippetTarget(params);
       const { content, message } = await createRequest(request);
       const root = await realpath(repositoryRoot);
       const repository = join(root, owner, repo);
       const commit = await createSnippet(repository, type, content, message);
+      if (user) await linkSnippet(stagingRoot, owner, repo, user);
       sendJSON(response, 201, { owner, repo, commit });
     },
     "DELETE /api/snippets/{owner}/{repo}": async (request, response, params) => {
@@ -82,7 +83,13 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       const repository = await repositoryPath(root, owner, repo);
       await rm(repository, { recursive: true });
       await rm(join(stagingRoot, owner, `${repo}.index`), { force: true });
+      await rm(join(stagingRoot, "owners", owner, `${repo}.owner`), { force: true });
       sendJSON(response, 200, { owner, repo, deleted: true });
+    },
+    "GET /api/snippets/mine": async (request, response) => {
+      const user = await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
+      const root = await realpath(repositoryRoot);
+      sendJSON(response, 200, await listUserSnippets(root, stagingRoot, user));
     },
     "GET /api/snippets/{owner}": async (_request, response, params) => {
       const owner = validPart(params.owner);
@@ -294,6 +301,40 @@ async function listOwnerSnippets(root, owner) {
   }
 
   return snippets.sort((left, right) => left.repo.localeCompare(right.repo));
+}
+
+async function linkSnippet(stagingRoot, owner, repo, user) {
+  const id = user.id || user.email;
+  if (!id) throw authenticationRequired();
+  const directory = join(stagingRoot, "owners", owner);
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, `${repo}.owner`), id, { mode: 0o600 });
+}
+
+async function listUserSnippets(root, stagingRoot, user) {
+  const id = user?.id || user?.email;
+  if (!id) return [];
+  const ownershipRoot = join(stagingRoot, "owners");
+  const owners = await readdir(ownershipRoot, { withFileTypes: true }).catch(() => []);
+  const snippets = [] as Array<{ owner: string; repo: string; type: string }>;
+  for (const owner of owners) {
+    if (!owner.isDirectory()) continue;
+    const entries = await readdir(join(ownershipRoot, owner.name), { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".owner")) continue;
+      const linkedUser = (await readFile(join(ownershipRoot, owner.name, entry.name), "utf8")).trim();
+      if (linkedUser !== id) continue;
+      const repo = entry.name.slice(0, -6);
+      try {
+        snippetType(repo);
+        await repositoryPath(root, owner.name, repo);
+        snippets.push({ owner: owner.name, repo, type: snippetType(repo) });
+      } catch {
+        // Ignore stale ownership records.
+      }
+    }
+  }
+  return snippets.sort((left, right) => `${left.owner}/${left.repo}`.localeCompare(`${right.owner}/${right.repo}`));
 }
 
 async function createSnippet(repository, type, content, message) {
