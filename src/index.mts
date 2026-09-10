@@ -91,6 +91,11 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       const root = await realpath(repositoryRoot);
       sendJSON(response, 200, await listUserSnippets(root, stagingRoot, user));
     },
+    "GET /api/snippets": async (request, response) => {
+      const query = new URL(request.url!, "http://registry.local").searchParams.get("q") || "";
+      const root = await realpath(repositoryRoot);
+      sendJSON(response, 200, await searchSnippets(root, query));
+    },
     "GET /api/snippets/{owner}": async (_request, response, params) => {
       const owner = validPart(params.owner);
       const root = await realpath(repositoryRoot);
@@ -332,6 +337,19 @@ async function listUserSnippets(root, stagingRoot, user) {
       } catch {
         // Ignore stale ownership records.
       }
+    }
+  }
+  return snippets.sort((left, right) => `${left.owner}/${left.repo}`.localeCompare(`${right.owner}/${right.repo}`));
+}
+
+async function searchSnippets(root, query) {
+  const normalized = query.trim().toLowerCase();
+  const owners = await readdir(root, { withFileTypes: true });
+  const snippets = [] as Array<{ owner: string; repo: string; type: string }>;
+  for (const owner of owners) {
+    if (!owner.isDirectory() || owner.name.startsWith(".")) continue;
+    for (const item of await listOwnerSnippets(root, owner.name)) {
+      if (!normalized || `${item.owner}/${item.repo}`.toLowerCase().includes(normalized)) snippets.push(item);
     }
   }
   return snippets.sort((left, right) => `${left.owner}/${left.repo}`.localeCompare(`${right.owner}/${right.repo}`));

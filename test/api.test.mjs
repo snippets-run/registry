@@ -100,6 +100,19 @@ test("lists an owner's snippets and returns entrypoint details", async (t) => {
   });
 });
 
+test("searches public snippets", async (t) => {
+  const first = await createSnippetRepository({ repo: "hello.sh" });
+  const registry = await startRegistry(first.root);
+  t.after(async () => {
+    await registry.close();
+    await first.remove();
+  });
+
+  const response = await fetch(`${registry.url}/api/snippets?q=hello`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), [{ owner: "acme", repo: "hello.sh", type: "bash" }]);
+});
+
 test("stages editor updates privately and commits them with a summary", async (t) => {
   const snippet = await createSnippetRepository({ contents: "printf 'hello\\n'\n" });
   const registry = await startRegistry(snippet.root);
