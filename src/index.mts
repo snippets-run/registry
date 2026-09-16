@@ -292,6 +292,7 @@ async function createMetadataStore(databaseURL, repositoryRoot) {
     "CREATE INDEX IF NOT EXISTS registry_snippets_owner_idx ON registry_snippets (owner, public, repo)",
     "CREATE INDEX IF NOT EXISTS registry_snippets_user_idx ON registry_snippets (owner_user_id, updated_at)",
   ];
+  await database.run(migrations[0]);
   const applied = await database.all("SELECT version FROM registry_migrations ORDER BY version");
   const versions = new Set(applied.map((row) => row.version));
   const statements = [] as Array<{ s: string; d: Array<string | number>; m: string }>;
