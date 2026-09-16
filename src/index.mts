@@ -434,8 +434,8 @@ async function createSnippet(repository, type, content, message) {
   await mkdir(join(repository, ".."), { recursive: true });
   const initialized = await git(join(repository, ".."), ["init", "--bare", "--initial-branch", "main", repository]);
   if (initialized.code !== 0) throw new Error("could not create snippet repository");
-  if (content === undefined) return null;
   const entrypoint = type === "bash" ? "main.sh" : type === "python" ? "main.py" : "index.mjs";
+  content ??= type === "bash" ? "#!/usr/bin/env bash\nset -euo pipefail\n" : type === "python" ? "print(\"Hello from snippets.run\")\n" : "console.log(\"Hello from snippets.run\");\n";
   const blob = await git(repository, ["hash-object", "-w", "--stdin"], {}, content);
   if (blob.code !== 0) throw new Error("could not create snippet content");
   const index = `${repository}.create-index`;
@@ -443,6 +443,10 @@ async function createSnippet(repository, type, content, message) {
     const environment = { GIT_INDEX_FILE: index };
     const added = await git(repository, ["update-index", "--add", "--cacheinfo", `100755,${blob.stdout.trim()},${entrypoint}`], environment);
     if (added.code !== 0) throw new Error("could not prepare snippet content");
+    const metadataBlob = await git(repository, ["hash-object", "-w", "--stdin"], {}, JSON.stringify({ description: "", inputs: [] }) + "\n");
+    if (metadataBlob.code !== 0) throw new Error("could not prepare snippet metadata");
+    const metadataAdded = await git(repository, ["update-index", "--add", "--cacheinfo", `100644,${metadataBlob.stdout.trim()},${metadataFile}`], environment);
+    if (metadataAdded.code !== 0) throw new Error("could not prepare snippet metadata");
     const tree = await git(repository, ["write-tree"], environment);
     if (tree.code !== 0) throw new Error("could not prepare snippet commit");
     const commit = await git(repository, ["commit-tree", tree.stdout.trim(), "-m", message || `Create ${entrypoint}`], {}, undefined, true);

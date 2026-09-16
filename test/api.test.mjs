@@ -200,7 +200,7 @@ test("creates and deletes snippets through the API", async (t) => {
   assert.equal((await fetch(`${registry.url}/api/snippets/acme/goodbye.py`)).status, 404);
 });
 
-test("creates an empty bare repository for the editor", async (t) => {
+test("creates a typed starter repository for the editor", async (t) => {
   const snippet = await createSnippetRepository();
   const registry = await startRegistry(snippet.root);
   t.after(async () => {
@@ -214,11 +214,11 @@ test("creates an empty bare repository for the editor", async (t) => {
     body: JSON.stringify({}),
   });
   assert.equal(created.status, 201);
-  assert.deepEqual(await created.json(), { owner: "acme", repo: "blank.sh", commit: null });
+  assert.match((await created.json()).commit, /^[0-9a-f]{40}$/);
 
   const workspace = await fetch(`${registry.url}/api/editor/acme/blank.sh`);
   assert.equal(workspace.status, 200);
-  assert.deepEqual((await workspace.json()).files, []);
+  assert.deepEqual((await workspace.json()).files.map((file) => file.path), ["main.sh"]);
 
   const staged = await fetch(`${registry.url}/api/editor/acme/blank.sh/file?path=main.sh`, {
     method: "PUT",
@@ -252,4 +252,25 @@ test("requires an OIDC session for snippet mutations and editor access", async (
 
   const editor = await fetch(`${registry.url}/api/editor/acme/hello.sh`);
   assert.equal(editor.status, 401);
+});
+
+test("allows only the configured review origin for credentialed browser requests", async (t) => {
+  const snippet = await createSnippetRepository();
+  const registry = await startRegistry(snippet.root, { reviewOrigins: ["https://x.snippets.run"] });
+  t.after(async () => {
+    await registry.close();
+    await snippet.remove();
+  });
+
+  const allowed = await fetch(`${registry.url}/api/snippets`, {
+    headers: { Origin: "https://x.snippets.run" },
+  });
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.headers.get("access-control-allow-origin"), "https://x.snippets.run");
+
+  const denied = await fetch(`${registry.url}/api/snippets`, {
+    method: "OPTIONS",
+    headers: { Origin: "https://evil.example", "Access-Control-Request-Method": "POST" },
+  });
+  assert.equal(denied.status, 403);
 });
