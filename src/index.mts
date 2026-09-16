@@ -149,14 +149,6 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       await ensureMetadataFile(repository, index);
       sendJSON(response, 201, { commit: await commitStaged(repository, index, await requestMessage(request)) });
     },
-    "GET /api/editor/{owner}/{repo}": async (request, response, params) => {
-      await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
-      const { owner, repo } = snippetTarget(params);
-      const root = await realpath(repositoryRoot);
-      const repository = await repositoryPath(root, owner, repo);
-      const index = await stagingIndex(stagingRoot, owner, repo);
-      sendJSON(response, 200, await editorSnippet(repository, { owner, repo }, index));
-    },
     "GET /api/editor/{owner}/{repo}/diff": async (request, response, params) => {
       await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
       const { owner, repo } = snippetTarget(params);
@@ -166,6 +158,14 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       const repository = await repositoryPath(root, owner, repo);
       const resolved = await resolveCommit(repository, commit);
       sendJSON(response, 200, { commit: resolved, diff: await commitDiff(repository, resolved) });
+    },
+    "GET /api/editor/{owner}/{repo}": async (request, response, params) => {
+      await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
+      const { owner, repo } = snippetTarget(params);
+      const root = await realpath(repositoryRoot);
+      const repository = await repositoryPath(root, owner, repo);
+      const index = await stagingIndex(stagingRoot, owner, repo);
+      sendJSON(response, 200, await editorSnippet(repository, { owner, repo }, index));
     },
   };
 
