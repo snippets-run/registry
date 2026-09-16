@@ -157,6 +157,16 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       const index = await stagingIndex(stagingRoot, owner, repo);
       sendJSON(response, 200, await editorSnippet(repository, { owner, repo }, index));
     },
+    "GET /api/editor/{owner}/{repo}/diff": async (request, response, params) => {
+      await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
+      const { owner, repo } = snippetTarget(params);
+      const commit = new URL(request.url!, "http://registry.local").searchParams.get("commit");
+      if (!commitPattern.test(commit || "")) throw invalidTarget("invalid commit");
+      const root = await realpath(repositoryRoot);
+      const repository = await repositoryPath(root, owner, repo);
+      const resolved = await resolveCommit(repository, commit);
+      sendJSON(response, 200, { commit: resolved, diff: await commitDiff(repository, resolved) });
+    },
   };
 
   const handler = router(routes, routeNotFound);
@@ -662,7 +672,7 @@ async function resolveCommit(repository, ref) {
 }
 
 function streamArchive(response, repository, commit) {
-  const child = spawn("git", ["-C", repository, "archive", "--format=tar.gz", commit], {
+  const child = spawn("git", ["-C", repository, "archive", "--format=tar.gz", commit, "--", ".", ":(exclude)tests/**"], {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -692,6 +702,12 @@ function streamArchive(response, repository, commit) {
   });
 
   child.stdout.pipe(response);
+}
+
+async function commitDiff(repository, commit) {
+  const result = await git(repository, ["show", "--format=", "--patch", commit]);
+  if (result.code !== 0) throw new Error("git diff failed");
+  return result.stdout;
 }
 
 function git(repository, arguments_, environment = {}, input?: string, author = false) {
@@ -726,7 +742,7 @@ function routeNotFound(request, response) {
     || /^\/auth\/(?:login|callback|me|logout)$/.test(pathname)
     || /^\/api\/snippets\/[^/]+(?:\/[^/]+)?$/.test(pathname)
     || /^\/api\/(?:resolve|download)\/[^/]+\/[^/]+$/.test(pathname)
-    || /^\/api\/editor\/[^/]+\/[^/]+(?:\/(?:file|commit))?$/.test(pathname);
+    || /^\/api\/editor\/[^/]+\/[^/]+(?:\/(?:file|commit|diff))?$/.test(pathname);
   if (isKnownEndpoint) {
     return sendError(response, 405, "method not allowed");
   }
