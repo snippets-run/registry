@@ -8,6 +8,7 @@ import router from "micro-router";
 const partPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const commitPattern = /^[0-9a-f]{7,64}$/;
 const debugEnabled = Boolean(process.env.DEBUG);
+const metadataFile = ".snippets.json";
 const snippetTypes = new Map([
   [".sh", "bash"],
   [".js", "node"],
@@ -129,12 +130,23 @@ export function createRegistryServer({ repositoryRoot, stagingRoot = join(reposi
       await stageFile(repository, index, path, await requestContent(request));
       sendJSON(response, 200, { path, staged: true });
     },
+    "PUT /api/editor/{owner}/{repo}/metadata": async (request, response, params) => {
+      await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
+      const { owner, repo } = snippetTarget(params);
+      const value = await metadataRequest(request);
+      const root = await realpath(repositoryRoot);
+      const repository = await repositoryPath(root, owner, repo);
+      const index = await stagingIndex(stagingRoot, owner, repo);
+      await stageFile(repository, index, metadataFile, JSON.stringify(value, null, 2) + "\n");
+      sendJSON(response, 200, { staged: true });
+    },
     "POST /api/editor/{owner}/{repo}/commit": async (request, response, params) => {
       await requireUser(request, sessions, authProvider, oidcClientId, oidcSecret);
       const { owner, repo } = snippetTarget(params);
       const root = await realpath(repositoryRoot);
       const repository = await repositoryPath(root, owner, repo);
       const index = await stagingIndex(stagingRoot, owner, repo);
+      await ensureMetadataFile(repository, index);
       sendJSON(response, 201, { commit: await commitStaged(repository, index, await requestMessage(request)) });
     },
     "GET /api/editor/{owner}/{repo}": async (request, response, params) => {
@@ -445,7 +457,7 @@ async function createSnippet(repository, type, content, message) {
 
 async function editorSnippet(repository, target, index) {
   const head = await optionalCommit(repository);
-  const files = head ? await trackedFiles(repository, head) : [];
+  const files = head ? (await trackedFiles(repository, head)).filter((path) => path !== metadataFile) : [];
   const staged = await stagedFiles(repository, index);
   const history = head ? await gitLines(repository, ["log", "-12", "--format=%H%x00%h%x00%s%x00%aI"]) : [];
   return {
@@ -460,7 +472,33 @@ async function editorSnippet(repository, target, index) {
       const [commit, shortCommit, message, date] = line.split("\0");
       return { commit, shortCommit, message, date };
     }),
+    metadata: head ? await snippetMetadata(repository, head) : { description: "", inputs: [] },
   };
+}
+
+async function snippetMetadata(repository, commit) {
+  try {
+    const value = JSON.parse(await fileAtCommit(repository, commit, metadataFile));
+    return { description: typeof value.description === "string" ? value.description : "", inputs: Array.isArray(value.inputs) ? value.inputs : [] };
+  } catch {
+    return { description: "", inputs: [] };
+  }
+}
+
+async function metadataRequest(request) {
+  let value;
+  try { value = JSON.parse(await requestBody(request)); } catch { throw invalidTarget("expected JSON metadata"); }
+  if (!value || typeof value !== "object" || typeof value.description !== "string" || !Array.isArray(value.inputs)) throw invalidTarget("invalid snippet metadata");
+  if (value.description.length > 10000 || value.inputs.length > 100) throw invalidTarget("invalid snippet metadata");
+  const inputs = value.inputs.map((input) => ({ name: String(input.name || "").trim(), type: String(input.type || "string"), required: Boolean(input.required) }));
+  if (inputs.some((input) => !partPattern.test(input.name) || !["string", "number", "boolean", "file"].includes(input.type))) throw invalidTarget("invalid snippet input");
+  return { description: value.description, inputs };
+}
+
+async function ensureMetadataFile(repository, index) {
+  const staged = await stagedFiles(repository, index);
+  const tracked = (await git(repository, ["ls-tree", "HEAD", "--", metadataFile])).code === 0;
+  if (!staged.includes(metadataFile) && !tracked) await stageFile(repository, index, metadataFile, JSON.stringify({ description: "", inputs: [] }) + "\n");
 }
 
 async function stagingIndex(stagingRoot, owner, repo) {
