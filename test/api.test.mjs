@@ -21,6 +21,10 @@ test("resolves a tag and streams its archive", async (t) => {
     commit: snippet.commit,
   });
 
+  const defaultResponse = await fetch(`${registry.url}/api/resolve/acme/hello.sh`);
+  assert.equal(defaultResponse.status, 200);
+  assert.equal((await defaultResponse.json()).ref, "main");
+
   const branchStyleRef = await fetch(`${registry.url}/api/resolve/acme/hello.sh@release%2Fv1`);
   assert.equal(branchStyleRef.status, 200);
   assert.equal((await branchStyleRef.json()).ref, "release/v1");

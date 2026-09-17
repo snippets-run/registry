@@ -1,6 +1,6 @@
 # Snippets.run Registry
 
-Git-backed HTTP registry for the Snippets.run runner. It resolves branches, tags, and commit references without requiring the runner to clone repositories locally. The runner uses `latest` as the default reference when none is specified.
+Git-backed HTTP registry for the Snippets.run runner. It resolves branches, tags, and commit references without requiring the runner to clone repositories locally. The runner uses `main` as the default reference when none is specified.
 
 ## Snippet Contract
 

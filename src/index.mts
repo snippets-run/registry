@@ -197,8 +197,9 @@ function snippetTarget(params) {
 
 function referenceTarget(params) {
   const owner = validPart(params.owner);
-  const [repo, value] = decodePart(params.target).split("@", 2);
-  if (!partPattern.test(repo) || !value) throw invalidTarget("Invalid snippet identifier");
+  const [repo, requestedValue] = decodePart(params.target).split("@", 2);
+  const value = requestedValue || "main";
+  if (!partPattern.test(repo)) throw invalidTarget("Invalid snippet identifier");
   return { owner, repo, value, type: snippetType(repo) };
 }
 
